@@ -17,13 +17,10 @@
 
 package org.apache.doris.nereids.rules.implementation;
 
-import org.apache.doris.catalog.ColocateTableIndex;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.DistributionInfo;
-import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.HashDistributionInfo;
 import org.apache.doris.catalog.OlapTable;
-import org.apache.doris.catalog.PartitionType;
 import org.apache.doris.nereids.properties.DistributionSpec;
 import org.apache.doris.nereids.properties.DistributionSpecAny;
 import org.apache.doris.nereids.properties.DistributionSpecHash;
@@ -48,48 +45,40 @@ public class LogicalOlapScanToPhysicalOlapScan extends OneImplementationRuleFact
     @Override
     public Rule build() {
         return logicalOlapScan().then(olapScan ->
-            new PhysicalOlapScan(
-                    olapScan.getId(),
-                    olapScan.getTable(),
-                    olapScan.getQualifier(),
-                    olapScan.getSelectedIndexId(),
-                    olapScan.getSelectedTabletIds(),
-                    olapScan.getSelectedPartitionIds(),
-                    convertDistribution(olapScan),
-                    olapScan.getPreAggStatus(),
-                    Optional.empty(),
-                    olapScan.getLogicalProperties())
+                new PhysicalOlapScan(
+                        olapScan.getId(),
+                        olapScan.getTable(),
+                        olapScan.getQualifier(),
+                        olapScan.getSelectedIndexId(),
+                        olapScan.getSelectedTabletIds(),
+                        olapScan.getSelectedPartitionIds(),
+                        convertDistribution(olapScan),
+                        olapScan.getPreAggStatus(),
+                        Optional.empty(),
+                        olapScan.getLogicalProperties())
         ).toRule(RuleType.LOGICAL_OLAP_SCAN_TO_PHYSICAL_OLAP_SCAN_RULE);
     }
 
     private DistributionSpec convertDistribution(LogicalOlapScan olapScan) {
         OlapTable olapTable = olapScan.getTable();
         DistributionInfo distributionInfo = olapTable.getDefaultDistributionInfo();
-        ColocateTableIndex colocateTableIndex = Env.getCurrentColocateIndex();
-        if ((colocateTableIndex.isColocateTable(olapTable.getId())
-                && !colocateTableIndex.isGroupUnstable(colocateTableIndex.getGroup(olapTable.getId())))
-                || olapTable.getPartitionInfo().getType() == PartitionType.UNPARTITIONED
-                || olapTable.getPartitions().size() == 1) {
-            if (!(distributionInfo instanceof HashDistributionInfo)) {
-                return DistributionSpecAny.INSTANCE;
-            }
-            HashDistributionInfo hashDistributionInfo = (HashDistributionInfo) distributionInfo;
-            List<Slot> output = olapScan.getOutput();
-            List<ExprId> hashColumns = Lists.newArrayList();
-            List<Column> schemaColumns = olapScan.getTable().getFullSchema();
-            for (int i = 0; i < schemaColumns.size(); i++) {
-                for (Column column : hashDistributionInfo.getDistributionColumns()) {
-                    if (schemaColumns.get(i).equals(column)) {
-                        hashColumns.add(output.get(i).getExprId());
-                    }
-                }
-            }
-            // TODO: need to consider colocate and dynamic partition and partition number
-            return new DistributionSpecHash(hashColumns, ShuffleType.NATURAL,
-                    olapScan.getTable().getId(), Sets.newHashSet(olapScan.getTable().getPartitionIds()));
-        } else {
-            // RandomDistributionInfo
+
+        if (!(distributionInfo instanceof HashDistributionInfo)) {
             return DistributionSpecAny.INSTANCE;
         }
+        HashDistributionInfo hashDistributionInfo = (HashDistributionInfo) distributionInfo;
+        List<Slot> output = olapScan.getOutput();
+        List<ExprId> hashColumns = Lists.newArrayList();
+        List<Column> schemaColumns = olapScan.getTable().getFullSchema();
+        for (int i = 0; i < schemaColumns.size(); i++) {
+            for (Column column : hashDistributionInfo.getDistributionColumns()) {
+                if (schemaColumns.get(i).equals(column)) {
+                    hashColumns.add(output.get(i).getExprId());
+                }
+            }
+        }
+        // TODO: need to consider colocate and dynamic partition and partition number
+        return new DistributionSpecHash(hashColumns, ShuffleType.NATURAL,
+                olapScan.getTable().getId(), Sets.newHashSet(olapScan.getTable().getPartitionIds()));
     }
 }

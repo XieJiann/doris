@@ -58,4 +58,17 @@ public class JoinTest extends SqlTestBase {
         // generate colocate join plan without physicalDistribute
         Assertions.assertFalse(plan.anyMatch(PhysicalDistribute.class::isInstance));
     }
+
+    @Test
+    void testBucketShuffleJoin() {
+        String sql = "select * from T2 join T3 on T2.id = T3.id;";
+        PhysicalPlan plan = PlanChecker.from(connectContext)
+                .analyze(sql)
+                .rewrite()
+                .deriveStats()
+                .optimize()
+                .getBestPlanTree();
+        // bucket shuffle join
+        Assertions.assertFalse(plan.child(0) instanceof PhysicalDistribute);
+    }
 }
