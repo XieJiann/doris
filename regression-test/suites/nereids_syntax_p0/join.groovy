@@ -228,5 +228,13 @@ suite("join") {
         contains "4:VAGGREGATE (update serialize)"
         contains "6:VAGGREGATE (merge finalize)"
     }
+
+    sql """
+        insert into outerjoin_D values( 2 );
+    """
+    test {
+        sql "select cast(a/2 as integer) from outerjoin_D where a > 1;"
+        result([[1]])
+    }
 }
 
