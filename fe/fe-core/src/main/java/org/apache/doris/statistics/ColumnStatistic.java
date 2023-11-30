@@ -22,6 +22,7 @@ import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.PartitionInfo;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.statistics.util.StatisticsUtil;
 
 import com.google.common.collect.Sets;
@@ -38,7 +39,7 @@ import java.util.Set;
 public class ColumnStatistic {
 
     public static final double STATS_ERROR = 0.1D;
-
+    public static final double ALMOST_UNIQUE_FACTOR = 0.9;
     public static final StatsType NDV = StatsType.NDV;
     public static final StatsType AVG_SIZE = StatsType.AVG_SIZE;
     public static final StatsType MAX_SIZE = StatsType.MAX_SIZE;
@@ -172,26 +173,36 @@ public class ColumnStatistic {
             String min = row.get(10);
             String max = row.get(11);
             if (min != null && !min.equalsIgnoreCase("NULL")) {
-                try {
-                    columnStatisticBuilder.setMinValue(StatisticsUtil.convertToDouble(col.getType(), min));
-                    columnStatisticBuilder.setMinExpr(StatisticsUtil.readableValue(col.getType(), min));
-                } catch (AnalysisException e) {
-                    LOG.warn("Failed to deserialize column {} min value {}.", col, min, e);
-                    columnStatisticBuilder.setMinValue(Double.MIN_VALUE);
+                // Internal catalog get the min/max value using a separate SQL,
+                // and the value is already encoded by base64. Need to handle internal and external catalog separately.
+                if (catalogId != InternalCatalog.INTERNAL_CATALOG_ID && min.equalsIgnoreCase("NULL")) {
+                    columnStatisticBuilder.setMinValue(Double.NEGATIVE_INFINITY);
+                } else {
+                    try {
+                        columnStatisticBuilder.setMinValue(StatisticsUtil.convertToDouble(col.getType(), min));
+                        columnStatisticBuilder.setMinExpr(StatisticsUtil.readableValue(col.getType(), min));
+                    } catch (AnalysisException e) {
+                        LOG.warn("Failed to deserialize column {} min value {}.", col, min, e);
+                        columnStatisticBuilder.setMinValue(Double.NEGATIVE_INFINITY);
+                    }
                 }
             } else {
-                columnStatisticBuilder.setMinValue(Double.MIN_VALUE);
+                columnStatisticBuilder.setMinValue(Double.NEGATIVE_INFINITY);
             }
             if (max != null && !max.equalsIgnoreCase("NULL")) {
-                try {
-                    columnStatisticBuilder.setMaxValue(StatisticsUtil.convertToDouble(col.getType(), max));
-                    columnStatisticBuilder.setMaxExpr(StatisticsUtil.readableValue(col.getType(), max));
-                } catch (AnalysisException e) {
-                    LOG.warn("Failed to deserialize column {} max value {}.", col, max, e);
-                    columnStatisticBuilder.setMaxValue(Double.MAX_VALUE);
+                if (catalogId != InternalCatalog.INTERNAL_CATALOG_ID && max.equalsIgnoreCase("NULL")) {
+                    columnStatisticBuilder.setMaxValue(Double.POSITIVE_INFINITY);
+                } else {
+                    try {
+                        columnStatisticBuilder.setMaxValue(StatisticsUtil.convertToDouble(col.getType(), max));
+                        columnStatisticBuilder.setMaxExpr(StatisticsUtil.readableValue(col.getType(), max));
+                    } catch (AnalysisException e) {
+                        LOG.warn("Failed to deserialize column {} max value {}.", col, max, e);
+                        columnStatisticBuilder.setMaxValue(Double.POSITIVE_INFINITY);
+                    }
                 }
             } else {
-                columnStatisticBuilder.setMaxValue(Double.MAX_VALUE);
+                columnStatisticBuilder.setMaxValue(Double.POSITIVE_INFINITY);
             }
             columnStatisticBuilder.setUpdatedTime(row.get(13));
             return columnStatisticBuilder.build();
@@ -202,7 +213,7 @@ public class ColumnStatistic {
     }
 
     public static boolean isAlmostUnique(double ndv, double rowCount) {
-        return rowCount * 0.9 < ndv && ndv < rowCount * 1.1;
+        return rowCount * ALMOST_UNIQUE_FACTOR < ndv;
     }
 
     public ColumnStatistic updateByLimit(long limit, double rowCount) {
@@ -250,6 +261,10 @@ public class ColumnStatistic {
 
     public double ndvIntersection(ColumnStatistic other) {
         if (isUnKnown) {
+            return 1;
+        }
+        if (Double.isInfinite(minValue) || Double.isInfinite(maxValue)
+                || Double.isInfinite(other.minValue) || Double.isInfinite(other.maxValue)) {
             return 1;
         }
         if (maxValue == minValue) {

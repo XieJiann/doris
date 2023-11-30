@@ -39,8 +39,10 @@ public class StorageBackend implements ParseNode {
         if (Strings.isNullOrEmpty(path)) {
             throw new AnalysisException("No destination path specified.");
         }
+        checkUri(URI.create(path), type);
+    }
 
-        URI uri = URI.create(path);
+    public static void checkUri(URI uri, StorageBackend.StorageType type) throws AnalysisException {
         String schema = uri.getScheme();
         if (schema == null) {
             throw new AnalysisException(
@@ -130,7 +132,7 @@ public class StorageBackend implements ParseNode {
             sb.append(" `").append(storageDesc.getName()).append("`");
         }
         sb.append(" ON LOCATION ").append(location).append(" PROPERTIES(")
-            .append(new PrintableMap<>(storageDesc.getProperties(), " = ", true, false))
+            .append(new PrintableMap<>(storageDesc.getProperties(), " = ", true, false, true))
             .append(")");
         return sb.toString();
     }
