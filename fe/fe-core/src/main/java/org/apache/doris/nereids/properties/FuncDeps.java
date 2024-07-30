@@ -121,7 +121,16 @@ public class FuncDeps {
                 dfs(parent, visited, circleItem);
             }
         }
-        return Sets.difference(items, circleItem);
+        Set<FuncDepsItem> validItems = new HashSet<>();
+        for (FuncDepsItem item : items) {
+            if (!Sets.intersection(item.dependencies, requireOutputs).isEmpty()
+                    || circleItem.contains(item)) {
+                // Skip items that are part of circular dependencies or contain required outputs.
+                continue;
+            }
+            validItems.add(item);
+        }
+        return validItems;
     }
 
     /**
@@ -137,19 +146,24 @@ public class FuncDeps {
      * <p>
      * Example:
      * Given:
-     * - Initial slots: {{A, B, C}, {D, E}, {F, G}}
-     * - Required outputs: {A, D, F}
-     * - Valid functional dependencies: {A} -> {B}, {D, E} -> {G}, {F} -> {G}
+     * - Initial slots: {{A}, {B, C}, {D, E}, {F, G}}
+     * - Required outputs: {A, B, C}
+     * - Possible functional dependencies DG: {A} -> {B, C}, {B, C} -> {D, E, F}, {D, E} -> {F, G}, {F, G} -> A
      *
      * Process:
+     * 1. Find all valid func items:
+     *   - DFS from required outputs first:
+     *      + Dfs from the root {A}: find {A} -> {B, C}
+     *      + Dfs from the root {B, C}: find {B, C} -> {D, E, F}
+     *   - DFS from other parents:
+     *      + Dfs from the root {D, E}: find {D, E} -> {F, G}
+     *      + Dfs from the root {F, G}: find {F, G} -> {A}, but {A} has visited
      * 1. Start with minSlotSet = {{A, B, C}, {D, E}, {F, G}}
-     * 2. For {A} -> {B}:
-     *    - Both {A} and {B} are in minSlotSet, so mark {B} for elimination
-     * 3. For {D, E} -> {G}:
-     *    - Both {D, E} and {G} are in minSlotSet, so mark {G} for elimination
-     * 4. For {F} -> {G}:
-     *    - Both {F} and {G} are in minSlotSet, but {G} is already marked for elimination
-     * 5. Remove eliminated slots: {B} and {G}
+     * 2. For {A} -> {B, C}:
+     *    - Mark {B, C} for elimination
+     * 3. For {B, C} -> {D, E, F}:
+     *    - Mark {D, E, F} for elimination
+     * 5. Remove {B, C} and {D, E, F}
      *
      * Result: {{A, C}, {D, E}, {F}}
      * </p>
@@ -157,7 +171,7 @@ public class FuncDeps {
      * @param slots the initial set of slot sets to be reduced
      * @param requireOutputs the set of slots that must be preserved in the output
      * @return the minimal set of slot sets after applying all possible reductions
-    */
+     */
     public Set<Set<Slot>> eliminateDeps(Set<Set<Slot>> slots, Set<Slot> requireOutputs) {
         Set<Set<Slot>> minSlotSet = Sets.newHashSet(slots);
         Set<Set<Slot>> eliminatedSlots = new HashSet<>();
