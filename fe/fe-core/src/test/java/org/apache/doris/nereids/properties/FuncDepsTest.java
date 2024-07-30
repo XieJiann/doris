@@ -118,4 +118,19 @@ class FuncDepsTest {
         expected.add(set1);
         Assertions.assertEquals(expected, slots);
     }
+
+    @Test
+    void testGraphEliminate2() {
+        Set<Set<Slot>> slotSet = Sets.newHashSet(set1, set2, set3, set4);
+        FuncDeps funcDeps = new FuncDeps();
+        funcDeps.addFuncItems(Sets.newHashSet(s1), Sets.newHashSet(s2));
+        funcDeps.addFuncItems(Sets.newHashSet(s2), Sets.newHashSet(s3));
+        funcDeps.addFuncItems(Sets.newHashSet(s3), Sets.newHashSet(s4));
+        Set<Set<Slot>> slots = funcDeps.eliminateDeps(slotSet, ImmutableSet.of(s1, s2, s3));
+        Set<Set<Slot>> expected = new HashSet<>();
+        expected.add(set1);
+        expected.add(set2);
+        expected.add(set3);
+        Assertions.assertEquals(expected, slots);
+    }
 }
