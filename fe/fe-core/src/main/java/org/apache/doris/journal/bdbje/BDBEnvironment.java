@@ -19,7 +19,6 @@ package org.apache.doris.journal.bdbje;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
-import org.apache.doris.common.FeConstants;
 import org.apache.doris.ha.BDBHA;
 import org.apache.doris.ha.BDBStateChangeListener;
 import org.apache.doris.ha.FrontendNodeType;
@@ -41,6 +40,7 @@ import com.sleepycat.je.rep.NetworkRestore;
 import com.sleepycat.je.rep.NetworkRestoreConfig;
 import com.sleepycat.je.rep.NoConsistencyRequiredPolicy;
 import com.sleepycat.je.rep.NodeType;
+import com.sleepycat.je.rep.RepInternal;
 import com.sleepycat.je.rep.ReplicatedEnvironment;
 import com.sleepycat.je.rep.ReplicationConfig;
 import com.sleepycat.je.rep.RollbackException;
@@ -72,9 +72,7 @@ public class BDBEnvironment {
     private static final int MEMORY_CACHE_PERCENT = 20;
     private static final List<String> BDBJE_LOG_LEVEL = ImmutableList.of("OFF", "SEVERE", "WARNING",
             "INFO", "CONFIG", "FINE", "FINER", "FINEST", "ALL");
-
     public static final String PALO_JOURNAL_GROUP = "PALO_JOURNAL_GROUP";
-
 
     private ReplicatedEnvironment replicatedEnvironment;
     private EnvironmentConfig environmentConfig;
@@ -84,26 +82,30 @@ public class BDBEnvironment {
     private ReentrantReadWriteLock lock;
     private List<Database> openedDatabases;
 
-    public BDBEnvironment() {
+    private final boolean isElectable;
+    private final boolean metadataFailureRecovery;
+
+    public BDBEnvironment(boolean isElectable, boolean metadataFailureRecovery) {
         openedDatabases = new ArrayList<Database>();
         this.lock = new ReentrantReadWriteLock(true);
+        this.isElectable = isElectable;
+        this.metadataFailureRecovery = metadataFailureRecovery;
     }
 
     // The setup() method opens the environment and database
     public void setup(File envHome, String selfNodeName, String selfNodeHostPort,
-                      String helperHostPort, boolean isElectable) {
-        boolean metadataFailureRecovery = null != System.getProperty(FeConstants.METADATA_FAILURE_RECOVERY_KEY);
+                      String helperHostPort) {
         // Almost never used, just in case the master can not restart
-        if (metadataFailureRecovery) {
-            if (!isElectable) {
+        if (metadataFailureRecovery || Config.enable_check_compatibility_mode) {
+            if (!isElectable && !Config.enable_check_compatibility_mode) {
                 LOG.error("Current node is not in the electable_nodes list. will exit");
                 System.exit(-1);
             }
-            LOG.info("start group reset");
+            LOG.warn("start group reset");
             DbResetRepGroup resetUtility = new DbResetRepGroup(
                     envHome, PALO_JOURNAL_GROUP, selfNodeName, selfNodeHostPort);
             resetUtility.reset();
-            LOG.info("group has been reset.");
+            LOG.warn("metadata recovery mode, group has been reset.");
         }
 
         // set replication config
@@ -112,7 +114,7 @@ public class BDBEnvironment {
         replicationConfig.setNodeHostPort(selfNodeHostPort);
         replicationConfig.setHelperHosts(helperHostPort);
         replicationConfig.setGroupName(PALO_JOURNAL_GROUP);
-        replicationConfig.setConfigParam(ReplicationConfig.ENV_UNKNOWN_STATE_TIMEOUT, "10");
+        replicationConfig.setConfigParam(ReplicationConfig.ENV_UNKNOWN_STATE_TIMEOUT, "10 s");
         replicationConfig.setMaxClockDelta(Config.max_bdbje_clock_delta_ms, TimeUnit.MILLISECONDS);
         replicationConfig.setConfigParam(ReplicationConfig.TXN_ROLLBACK_LIMIT,
                 String.valueOf(Config.txn_rollback_limit));
@@ -140,6 +142,11 @@ public class BDBEnvironment {
                 String.valueOf(Config.bdbje_reserved_disk_bytes));
         environmentConfig.setConfigParam(EnvironmentConfig.FREE_DISK,
                 String.valueOf(Config.bdbje_free_disk_bytes));
+
+        if (Config.ignore_bdbje_log_checksum_read) {
+            environmentConfig.setConfigParam(EnvironmentConfig.LOG_CHECKSUM_READ, "false");
+            LOG.warn("set EnvironmentConfig.LOG_CHECKSUM_READ false");
+        }
 
         if (BDBJE_LOG_LEVEL.contains(Config.bdbje_file_logging_level)) {
             java.util.logging.Logger parent = java.util.logging.Logger.getLogger("com.sleepycat.je");
@@ -170,6 +177,9 @@ public class BDBEnvironment {
         // open environment and epochDB
         for (int i = 0; i < RETRY_TIME; i++) {
             try {
+                if (replicatedEnvironment != null) {
+                    this.close();
+                }
                 // open the environment
                 replicatedEnvironment = new ReplicatedEnvironment(envHome, replicationConfig, environmentConfig);
 
@@ -178,12 +188,13 @@ public class BDBEnvironment {
                 Env.getCurrentEnv().setHaProtocol(protocol);
 
                 // start state change listener
-                StateChangeListener listener = new BDBStateChangeListener();
+                StateChangeListener listener = new BDBStateChangeListener(isElectable);
                 replicatedEnvironment.setStateChangeListener(listener);
                 // open epochDB. the first parameter null means auto-commit
                 epochDB = replicatedEnvironment.openDatabase(null, "epochDB", dbConfig);
                 break;
             } catch (InsufficientLogException insufficientLogEx) {
+                LOG.info("i:{} insufficientLogEx:", i, insufficientLogEx);
                 NetworkRestore restore = new NetworkRestore();
                 NetworkRestoreConfig config = new NetworkRestoreConfig();
                 config.setRetainLogFiles(false); // delete obsolete log files.
@@ -193,6 +204,7 @@ public class BDBEnvironment {
                 // default selection of providers is not suitable.
                 restore.execute(insufficientLogEx, config);
             } catch (DatabaseException e) {
+                LOG.info("i:{} exception:", i, e);
                 if (i < RETRY_TIME - 1) {
                     try {
                         Thread.sleep(5 * 1000);
@@ -358,7 +370,9 @@ public class BDBEnvironment {
                 if (StringUtils.isNumeric(name)) {
                     ret.add(Long.parseLong(name));
                 } else {
-                    // LOG.debug("get database names, skipped {}", name);
+                    if (LOG.isDebugEnabled()) {
+                        // LOG.debug("get database names, skipped {}", name);
+                    }
                 }
             }
         }
@@ -381,6 +395,7 @@ public class BDBEnvironment {
         if (epochDB != null) {
             try {
                 epochDB.close();
+                epochDB = null;
             } catch (DatabaseException exception) {
                 LOG.error("Error closing db {} will exit", epochDB.getDatabaseName(), exception);
             }
@@ -390,19 +405,7 @@ public class BDBEnvironment {
             try {
                 // Finally, close the store and environment.
                 replicatedEnvironment.close();
-            } catch (DatabaseException exception) {
-                LOG.error("Error closing replicatedEnvironment", exception);
-            }
-        }
-    }
-
-    // Close environment
-    public void closeReplicatedEnvironment() {
-        if (replicatedEnvironment != null) {
-            try {
-                openedDatabases.clear();
-                // Finally, close the store and environment.
-                replicatedEnvironment.close();
+                replicatedEnvironment = null;
             } catch (DatabaseException exception) {
                 LOG.error("Error closing replicatedEnvironment", exception);
             }
@@ -413,18 +416,22 @@ public class BDBEnvironment {
     public void openReplicatedEnvironment(File envHome) {
         for (int i = 0; i < RETRY_TIME; i++) {
             try {
+                if (replicatedEnvironment != null) {
+                    this.close();
+                }
                 // open the environment
                 replicatedEnvironment =
                         new ReplicatedEnvironment(envHome, replicationConfig, environmentConfig);
 
                 // start state change listener
-                StateChangeListener listener = new BDBStateChangeListener();
+                StateChangeListener listener = new BDBStateChangeListener(isElectable);
                 replicatedEnvironment.setStateChangeListener(listener);
 
                 // open epochDB. the first parameter null means auto-commit
                 epochDB = replicatedEnvironment.openDatabase(null, "epochDB", dbConfig);
                 break;
             } catch (DatabaseException e) {
+                LOG.info("i:{} exception:", i, e);
                 if (i < RETRY_TIME - 1) {
                     try {
                         Thread.sleep(5 * 1000);
@@ -439,7 +446,7 @@ public class BDBEnvironment {
         }
     }
 
-    private SyncPolicy getSyncPolicy(String policy) {
+    private static SyncPolicy getSyncPolicy(String policy) {
         if (policy.equalsIgnoreCase("SYNC")) {
             return Durability.SyncPolicy.SYNC;
         }
@@ -450,7 +457,7 @@ public class BDBEnvironment {
         return Durability.SyncPolicy.WRITE_NO_SYNC;
     }
 
-    private ReplicaAckPolicy getAckPolicy(String policy) {
+    private static ReplicaAckPolicy getAckPolicy(String policy) {
         if (policy.equalsIgnoreCase("ALL")) {
             return Durability.ReplicaAckPolicy.ALL;
         }
@@ -459,6 +466,25 @@ public class BDBEnvironment {
         }
         // default value is SIMPLE_MAJORITY
         return Durability.ReplicaAckPolicy.SIMPLE_MAJORITY;
+    }
+
+    public String getNotReadyReason() {
+        if (replicatedEnvironment == null) {
+            LOG.warn("replicatedEnvironment is null");
+            return "replicatedEnvironment is null";
+        }
+        try {
+            if (replicatedEnvironment.getInvalidatingException() != null) {
+                return replicatedEnvironment.getInvalidatingException().getMessage();
+            }
+
+            if (RepInternal.getNonNullRepImpl(replicatedEnvironment).getDiskLimitViolation() != null) {
+                return RepInternal.getNonNullRepImpl(replicatedEnvironment).getDiskLimitViolation();
+            }
+        } catch (Exception e) {
+            LOG.warn("getNotReadyReason exception:", e);
+        }
+        return "";
     }
 
 }

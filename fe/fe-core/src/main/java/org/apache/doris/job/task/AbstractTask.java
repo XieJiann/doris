@@ -18,6 +18,7 @@
 package org.apache.doris.job.task;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.job.base.AbstractJob;
 import org.apache.doris.job.base.Job;
 import org.apache.doris.job.common.TaskStatus;
 import org.apache.doris.job.common.TaskType;
@@ -25,10 +26,11 @@ import org.apache.doris.job.exception.JobException;
 
 import com.google.gson.annotations.SerializedName;
 import lombok.Data;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
+import org.apache.commons.lang3.RandomUtils;
 
 @Data
-@Slf4j
+@Log4j2
 public abstract class AbstractTask implements Task {
 
     @SerializedName(value = "jid")
@@ -48,9 +50,21 @@ public abstract class AbstractTask implements Task {
     @SerializedName(value = "tt")
     private TaskType taskType;
 
+    @SerializedName(value = "emg")
+    private String errMsg;
+
+    public AbstractTask() {
+        taskId = getNextTaskId();
+    }
+
+    private static long getNextTaskId() {
+        // do not use Env.getNextId(), just generate id without logging
+        return System.nanoTime() + RandomUtils.nextInt();
+    }
+
     @Override
-    public void onFail(String msg) {
-        status = TaskStatus.FAILD;
+    public void onFail() throws JobException {
+        status = TaskStatus.FAILED;
         if (!isCallable()) {
             return;
         }
@@ -58,12 +72,13 @@ public abstract class AbstractTask implements Task {
     }
 
     @Override
-    public void onFail() throws JobException {
-        if (TaskStatus.CANCEL.equals(status)) {
+    public void onFail(String errMsg) throws JobException {
+        if (TaskStatus.CANCELED.equals(status)) {
             return;
         }
-        status = TaskStatus.FAILD;
+        status = TaskStatus.FAILED;
         setFinishTimeMs(System.currentTimeMillis());
+        setErrMsg(errMsg);
         if (!isCallable()) {
             return;
         }
@@ -72,7 +87,7 @@ public abstract class AbstractTask implements Task {
     }
 
     private boolean isCallable() {
-        if (status.equals(TaskStatus.CANCEL)) {
+        if (status.equals(TaskStatus.CANCELED)) {
             return false;
         }
         if (null != Env.getCurrentEnv().getJobManager().getJob(jobId)) {
@@ -81,8 +96,23 @@ public abstract class AbstractTask implements Task {
         return false;
     }
 
+    /**
+     * Closes or releases all allocated resources such as database connections, file streams, or any other
+     * external system handles that were utilized during the task execution. This method is invoked
+     * unconditionally, ensuring that resources are properly managed whether the task completes
+     * successfully, fails, or is canceled. It is crucial for preventing resource leaks and maintaining
+     * the overall health and efficiency of the application.
+     * <p>
+     * Note: Implementations of this method should handle potential exceptions internally and log them
+     * appropriately to avoid interrupting the normal flow of cleanup operations.
+     */
+    protected abstract void closeOrReleaseResources();
+
     @Override
     public void onSuccess() throws JobException {
+        if (TaskStatus.CANCELED.equals(status)) {
+            return;
+        }
         status = TaskStatus.SUCCESS;
         setFinishTimeMs(System.currentTimeMillis());
         if (!isCallable()) {
@@ -96,10 +126,34 @@ public abstract class AbstractTask implements Task {
         job.onTaskSuccess(this);
     }
 
+    /**
+     * Cancels the ongoing task, updating its status to {@link TaskStatus#CANCELED} and releasing associated resources.
+     * This method encapsulates the core cancellation logic, calling the abstract method
+     * {@link #executeCancelLogic()} for task-specific actions.
+     *
+     * @throws JobException If an error occurs during the cancellation process, a new JobException is thrown wrapping
+     *                      the original exception.
+     */
     @Override
     public void cancel() throws JobException {
-        status = TaskStatus.CANCEL;
+        try {
+            executeCancelLogic();
+            status = TaskStatus.CANCELED;
+        } catch (Exception e) {
+            log.warn("cancel task failed, job id is {}, task id is {}", jobId, taskId, e);
+            throw new JobException(e);
+        } finally {
+            closeOrReleaseResources();
+        }
     }
+
+    /**
+     * Abstract method for implementing the task-specific cancellation logic.
+     * Subclasses must override this method to provide their own implementation of how a task should be canceled.
+     *
+     * @throws Exception Any exception that might occur during the cancellation process in the subclass.
+     */
+    protected abstract void executeCancelLogic() throws Exception;
 
     @Override
     public void before() throws JobException {
@@ -113,13 +167,42 @@ public abstract class AbstractTask implements Task {
             run();
             onSuccess();
         } catch (Exception e) {
+            this.errMsg = e.getMessage();
             onFail();
-            log.warn("execute task error, job id is {},task id is {}", jobId, taskId, e);
+            log.warn("execute task error, job id is {}, task id is {}", jobId, taskId, e);
+        } finally {
+            closeOrReleaseResources();
         }
     }
 
     public boolean isCancelled() {
-        return status.equals(TaskStatus.CANCEL);
+        return status.equals(TaskStatus.CANCELED);
     }
 
+    public String getJobName() {
+        AbstractJob job = Env.getCurrentEnv().getJobManager().getJob(jobId);
+        return job == null ? "" : job.getJobName();
+    }
+
+    public Job getJobOrJobException() throws JobException {
+        AbstractJob job = Env.getCurrentEnv().getJobManager().getJob(jobId);
+        if (job == null) {
+            throw new JobException("job not exist, jobId:" + jobId);
+        }
+        return job;
+    }
+
+    @Override
+    public String toString() {
+        return "AbstractTask{"
+                + "jobId=" + jobId
+                + ", taskId=" + taskId
+                + ", status=" + status
+                + ", createTimeMs=" + createTimeMs
+                + ", startTimeMs=" + startTimeMs
+                + ", finishTimeMs=" + finishTimeMs
+                + ", taskType=" + taskType
+                + ", errMsg='" + errMsg + '\''
+                + '}';
+    }
 }

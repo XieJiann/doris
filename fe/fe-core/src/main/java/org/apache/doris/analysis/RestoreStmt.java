@@ -20,6 +20,7 @@ package org.apache.doris.analysis;
 import org.apache.doris.backup.Repository;
 import org.apache.doris.catalog.ReplicaAllocation;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.UserException;
@@ -112,6 +113,10 @@ public class RestoreStmt extends AbstractBackupStmt {
     public void analyze(Analyzer analyzer) throws UserException {
         if (repoName.equals(Repository.KEEP_ON_LOCAL_REPO_NAME)) {
             isLocal = true;
+            if (jobInfo == null) {
+                ErrorReport.reportDdlException(ErrorCode.ERR_COMMON_ERROR,
+                        "restore from the local repo via SQL call is not supported");
+            }
         }
         super.analyze(analyzer);
     }
@@ -163,6 +168,10 @@ public class RestoreStmt extends AbstractBackupStmt {
             } else {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_COMMON_ERROR,
                         "Invalid reserve_replica value: " + copiedProperties.get(PROP_RESERVE_REPLICA));
+            }
+            // force set reserveReplica to false, do not keep the origin allocation
+            if (reserveReplica && !Config.force_olap_table_replication_allocation.isEmpty()) {
+                reserveReplica = false;
             }
             copiedProperties.remove(PROP_RESERVE_REPLICA);
         }
@@ -237,5 +246,10 @@ public class RestoreStmt extends AbstractBackupStmt {
         sb.append(new PrintableMap<String, String>(properties, " = ", true, true));
         sb.append("\n)");
         return sb.toString();
+    }
+
+    @Override
+    public StmtType stmtType() {
+        return StmtType.RESTORE;
     }
 }

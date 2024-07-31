@@ -39,14 +39,18 @@ import java.io.IOException;
 public class DorisFlightSqlService {
     private static final Logger LOG = LogManager.getLogger(DorisFlightSqlService.class);
     private final FlightServer flightServer;
-    private volatile boolean running;
     private final FlightTokenManager flightTokenManager;
     private final FlightSessionsManager flightSessionsManager;
+    private volatile boolean running;
 
     public DorisFlightSqlService(int port) {
         BufferAllocator allocator = new RootAllocator();
         Location location = Location.forGrpcInsecure("0.0.0.0", port);
-        this.flightTokenManager = new FlightTokenManagerImpl(Config.arrow_flight_token_cache_size,
+        // arrow_flight_token_cache_size less than qe_max_connection to avoid `Reach limit of connections`.
+        // arrow flight sql is a stateless protocol, connection is usually not actively disconnected.
+        // bearer token is evict from the cache will unregister ConnectContext.
+        this.flightTokenManager = new FlightTokenManagerImpl(
+                Math.min(Config.arrow_flight_token_cache_size, Config.qe_max_connection / 2),
                 Config.arrow_flight_token_alive_time);
         this.flightSessionsManager = new FlightSessionsWithTokenManager(flightTokenManager);
 

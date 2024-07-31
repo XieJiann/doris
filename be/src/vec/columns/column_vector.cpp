@@ -74,11 +74,30 @@ void ColumnVector<T>::serialize_vec(std::vector<StringRef>& keys, size_t num_row
 
 template <typename T>
 void ColumnVector<T>::serialize_vec_with_null_map(std::vector<StringRef>& keys, size_t num_rows,
-                                                  const uint8_t* null_map) const {
-    for (size_t i = 0; i < num_rows; ++i) {
-        if (null_map[i] == 0) {
-            memcpy_fixed<T>(const_cast<char*>(keys[i].data + keys[i].size), (char*)&data[i]);
-            keys[i].size += sizeof(T);
+                                                  const UInt8* null_map) const {
+    DCHECK(null_map != nullptr);
+
+    const bool has_null = simd::contain_byte(null_map, num_rows, 1);
+
+    if (has_null) {
+        for (size_t i = 0; i < num_rows; ++i) {
+            char* __restrict dest = const_cast<char*>(keys[i].data + keys[i].size);
+            // serialize null first
+            memcpy(dest, null_map + i, sizeof(UInt8));
+            if (null_map[i] == 0) {
+                // If this row is not null, serialize the value
+                memcpy(dest + 1, (void*)&data[i], sizeof(T));
+            }
+
+            keys[i].size += sizeof(UInt8) + (1 - null_map[i]) * sizeof(T);
+        }
+    } else {
+        // All rows are not null, serialize null & value
+        for (size_t i = 0; i < num_rows; ++i) {
+            char* __restrict dest = const_cast<char*>(keys[i].data + keys[i].size);
+            memset(dest, 0, 1);
+            memcpy_fixed<T>(dest + 1, (char*)&data[i]);
+            keys[i].size += sizeof(T) + sizeof(UInt8);
         }
     }
 }
@@ -108,12 +127,6 @@ void ColumnVector<T>::deserialize_vec_with_null_map(std::vector<StringRef>& keys
 template <typename T>
 void ColumnVector<T>::update_hash_with_value(size_t n, SipHash& hash) const {
     hash.update(data[n]);
-}
-
-template <typename T>
-void ColumnVector<T>::update_hashes_with_value(std::vector<SipHash>& hashes,
-                                               const uint8_t* __restrict null_data) const {
-    SIP_HASHES_FUNCTION_COLUMN_IMPL();
 }
 
 template <typename T>
@@ -147,21 +160,17 @@ void ColumnVector<T>::compare_internal(size_t rhs_row_id, const IColumn& rhs,
                                        int nan_direction_hint, int direction,
                                        std::vector<uint8>& cmp_res,
                                        uint8* __restrict filter) const {
-    auto sz = this->size();
+    const auto sz = data.size();
     DCHECK(cmp_res.size() == sz);
     const auto& cmp_base = assert_cast<const ColumnVector<T>&>(rhs).get_data()[rhs_row_id];
     size_t begin = simd::find_zero(cmp_res, 0);
     while (begin < sz) {
         size_t end = simd::find_one(cmp_res, begin + 1);
         for (size_t row_id = begin; row_id < end; row_id++) {
-            auto value_a = get_data()[row_id];
+            auto value_a = data[row_id];
             int res = value_a > cmp_base ? 1 : (value_a < cmp_base ? -1 : 0);
-            if (res * direction < 0) {
-                filter[row_id] = 1;
-                cmp_res[row_id] = 1;
-            } else if (res * direction > 0) {
-                cmp_res[row_id] = 1;
-            }
+            cmp_res[row_id] = (res != 0);
+            filter[row_id] = (res * direction < 0);
         }
         begin = simd::find_zero(cmp_res, end + 1);
     }
@@ -341,23 +350,13 @@ MutableColumnPtr ColumnVector<T>::clone_resized(size_t size) const {
 }
 
 template <typename T>
-UInt64 ColumnVector<T>::get64(size_t n) const {
-    return static_cast<UInt64>(data[n]);
-}
-
-template <typename T>
-Float64 ColumnVector<T>::get_float64(size_t n) const {
-    return static_cast<Float64>(data[n]);
-}
-
-template <typename T>
 void ColumnVector<T>::insert_range_from(const IColumn& src, size_t start, size_t length) {
     const ColumnVector& src_vec = assert_cast<const ColumnVector&>(src);
     if (start + length > src_vec.data.size()) {
-        LOG(FATAL) << fmt::format(
-                "Parameters start = {}, length = {}, are out of bound in "
-                "ColumnVector<T>::insert_range_from method (data.size() = {}).",
-                start, length, src_vec.data.size());
+        throw doris::Exception(doris::ErrorCode::INTERNAL_ERROR,
+                               "Parameters start = {}, length = {}, are out of bound in "
+                               "ColumnVector<T>::insert_range_from method (data.size() = {}).",
+                               start, length, src_vec.data.size());
     }
 
     size_t old_size = data.size();
@@ -366,40 +365,21 @@ void ColumnVector<T>::insert_range_from(const IColumn& src, size_t start, size_t
 }
 
 template <typename T>
-void ColumnVector<T>::insert_indices_from(const IColumn& src, const int* indices_begin,
-                                          const int* indices_end) {
+void ColumnVector<T>::insert_indices_from(const IColumn& src, const uint32_t* indices_begin,
+                                          const uint32_t* indices_end) {
     auto origin_size = size();
     auto new_size = indices_end - indices_begin;
     data.resize(origin_size + new_size);
 
-    const T* src_data = reinterpret_cast<const T*>(src.get_raw_data().data);
-
-    if constexpr (std::is_same_v<T, UInt8>) {
-        // nullmap : indices_begin[i] == -1 means is null at the here, set true here
-        for (int i = 0; i < new_size; ++i) {
-            data[origin_size + i] = (indices_begin[i] == -1) +
-                                    (indices_begin[i] != -1) * src_data[indices_begin[i]];
+    auto copy = [](const T* __restrict src, T* __restrict dest, const uint32_t* __restrict begin,
+                   const uint32_t* __restrict end) {
+        for (const auto* it = begin; it != end; ++it) {
+            *dest = src[*it];
+            ++dest;
         }
-    } else {
-        // real data : indices_begin[i] == -1 what at is meaningless
-        for (int i = 0; i < new_size; ++i) {
-            data[origin_size + i] = src_data[indices_begin[i]];
-        }
-    }
-}
-
-template <typename T>
-void ColumnVector<T>::insert_indices_from_join(const IColumn& src, const uint32_t* indices_begin,
-                                               const uint32_t* indices_end) {
-    auto origin_size = size();
-    auto new_size = indices_end - indices_begin;
-    data.resize(origin_size + new_size);
-
-    const T* __restrict src_data = reinterpret_cast<const T*>(src.get_raw_data().data);
-
-    for (uint32_t i = 0; i < new_size; ++i) {
-        data[origin_size + i] = src_data[indices_begin[i]];
-    }
+    };
+    copy(reinterpret_cast<const T*>(src.get_raw_data().data), data.data() + origin_size,
+         indices_begin, indices_end);
 }
 
 template <typename T>
@@ -520,6 +500,7 @@ ColumnPtr ColumnVector<T>::permute(const IColumn::Permutation& perm, size_t limi
 
     if (perm.size() < limit) {
         LOG(FATAL) << "Size of permutation is less than required.";
+        __builtin_unreachable();
     }
 
     auto res = this->create(limit);
@@ -547,7 +528,8 @@ ColumnPtr ColumnVector<T>::replicate(const IColumn::Offsets& offsets) const {
     res_data.reserve(offsets.back());
 
     // vectorized this code to speed up
-    IColumn::Offset counts[size];
+    auto counts_uptr = std::unique_ptr<IColumn::Offset[]>(new IColumn::Offset[size]);
+    IColumn::Offset* counts = counts_uptr.get();
     for (ssize_t i = 0; i < size; ++i) {
         counts[i] = offsets[i] - offsets[i - 1];
     }
@@ -560,30 +542,21 @@ ColumnPtr ColumnVector<T>::replicate(const IColumn::Offsets& offsets) const {
 }
 
 template <typename T>
-void ColumnVector<T>::replicate(const uint32_t* __restrict indexs, size_t target_size,
-                                IColumn& column) const {
-    auto& res = reinterpret_cast<ColumnVector<T>&>(column);
-    typename Self::Container& res_data = res.get_data();
-    DCHECK(res_data.empty());
-    res_data.resize(target_size);
-    auto* __restrict left = res_data.data();
-    auto* __restrict right = data.data();
-    auto* __restrict idxs = indexs;
-
-    for (size_t i = 0; i < target_size; ++i) {
-        left[i] = right[idxs[i]];
+void ColumnVector<T>::replace_column_null_data(const uint8_t* __restrict null_map) {
+    auto s = size();
+    size_t null_count = s - simd::count_zero_num((const int8_t*)null_map, s);
+    if (0 == null_count) {
+        return;
     }
-}
-
-template <typename T>
-ColumnPtr ColumnVector<T>::index(const IColumn& indexes, size_t limit) const {
-    return select_index_impl(*this, indexes, limit);
+    for (size_t i = 0; i < s; ++i) {
+        data[i] = null_map[i] ? T() : data[i];
+    }
 }
 
 /// Explicit template instantiations - to avoid code bloat in headers.
 template class ColumnVector<UInt8>;
 template class ColumnVector<UInt16>;
-template class ColumnVector<UInt32>;
+template class ColumnVector<UInt32>; // IPv4
 template class ColumnVector<UInt64>;
 template class ColumnVector<UInt128>;
 template class ColumnVector<Int8>;
@@ -593,4 +566,5 @@ template class ColumnVector<Int64>;
 template class ColumnVector<Int128>;
 template class ColumnVector<Float32>;
 template class ColumnVector<Float64>;
+template class ColumnVector<IPv6>; // IPv6
 } // namespace doris::vectorized

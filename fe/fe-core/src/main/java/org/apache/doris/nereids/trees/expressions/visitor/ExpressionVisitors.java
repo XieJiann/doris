@@ -17,16 +17,11 @@
 
 package org.apache.doris.nereids.trees.expressions.visitor;
 
-import org.apache.doris.nereids.rules.exploration.mv.Predicates;
-import org.apache.doris.nereids.trees.expressions.ComparisonPredicate;
-import org.apache.doris.nereids.trees.expressions.EqualTo;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.WindowExpression;
 import org.apache.doris.nereids.trees.expressions.functions.agg.AggregateFunction;
-import org.apache.doris.nereids.util.ExpressionUtils;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Map;
 
 /**
  * This is the factory for all ExpressionVisitor instance.
@@ -36,6 +31,7 @@ import java.util.List;
 public class ExpressionVisitors {
 
     public static final ContainsAggregateChecker CONTAINS_AGGREGATE_CHECKER = new ContainsAggregateChecker();
+    public static final ExpressionMapReplacer EXPRESSION_MAP_REPLACER = new ExpressionMapReplacer();
 
     private static class ContainsAggregateChecker extends DefaultExpressionVisitor<Boolean, Void> {
         @Override
@@ -63,44 +59,20 @@ public class ExpressionVisitors {
     }
 
     /**
-     * Split the expression to equal, range and residual predicate.
-     * Should instance when used.
+     * replace sub expr by Map
      */
-    public static class PredicatesSpliter extends DefaultExpressionVisitor<Void, Void> {
+    public static class ExpressionMapReplacer
+            extends DefaultExpressionRewriter<Map<Expression, Expression>> {
 
-        private List<Expression> equalPredicates = new ArrayList<>();
-        private List<Expression> rangePredicates = new ArrayList<>();
-        private List<Expression> residualPredicates = new ArrayList<>();
-        private final Expression target;
-
-        public PredicatesSpliter(Expression target) {
-            this.target = target;
+        private ExpressionMapReplacer() {
         }
 
         @Override
-        public Void visitComparisonPredicate(ComparisonPredicate comparisonPredicate, Void context) {
-            // TODO Smallest implement, complete later
-            if (comparisonPredicate instanceof EqualTo) {
-                Expression leftArgument = comparisonPredicate.getArgument(0);
-                Expression rightArgument = comparisonPredicate.getArgument(1);
-                if (leftArgument.isSlot() && rightArgument.isSlot()) {
-                    equalPredicates.add(comparisonPredicate);
-                } else {
-                    rangePredicates.add(comparisonPredicate);
-                }
+        public Expression visit(Expression expr, Map<Expression, Expression> replaceMap) {
+            if (replaceMap.containsKey(expr)) {
+                return replaceMap.get(expr);
             }
-            return super.visit(comparisonPredicate, context);
-        }
-
-        public Expression getTarget() {
-            return target;
-        }
-
-        public Predicates.SplitPredicate getSplitPredicate() {
-            return Predicates.SplitPredicate.of(
-                    equalPredicates.isEmpty() ? null : ExpressionUtils.and(equalPredicates),
-                    rangePredicates.isEmpty() ? null : ExpressionUtils.and(rangePredicates),
-                    residualPredicates.isEmpty() ? null : ExpressionUtils.and(residualPredicates));
+            return super.visit(expr, replaceMap);
         }
     }
 }

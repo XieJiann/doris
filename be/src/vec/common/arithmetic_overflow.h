@@ -123,12 +123,12 @@ inline bool mul_overflow(__int128 x, __int128 y, __int128& res) {
 
     unsigned __int128 a = (x > 0) ? x : -x;
     unsigned __int128 b = (y > 0) ? y : -y;
-    return (a * b) / b != a;
+    return ((a * b) / b != a) || (x > 0 && y > 0 && res < 0) || (x < 0 && y < 0 && res < 0);
 }
 
 template <>
 inline bool mul_overflow(wide::Int256 x, wide::Int256 y, wide::Int256& res) {
-    res = x * y;
+    res = static_cast<wide::UInt256>(x) * static_cast<wide::UInt256>(y);
     if (!x || !y) return false;
     wide::UInt256 a = (x > 0) ? x : -x;
     wide::UInt256 b = (y > 0) ? y : -y;

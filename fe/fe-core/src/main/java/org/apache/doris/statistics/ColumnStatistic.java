@@ -19,7 +19,6 @@ package org.apache.doris.statistics;
 
 import org.apache.doris.analysis.LiteralExpr;
 import org.apache.doris.catalog.Column;
-import org.apache.doris.catalog.PartitionInfo;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.datasource.InternalCatalog;
@@ -31,9 +30,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.json.JSONObject;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 public class ColumnStatistic {
@@ -59,7 +56,7 @@ public class ColumnStatistic {
             .build();
 
     public static final Set<Type> UNSUPPORTED_TYPE = Sets.newHashSet(
-            Type.HLL, Type.BITMAP, Type.ARRAY, Type.STRUCT, Type.MAP, Type.QUANTILE_STATE, Type.AGG_STATE, Type.JSONB,
+            Type.HLL, Type.BITMAP, Type.ARRAY, Type.STRUCT, Type.MAP, Type.QUANTILE_STATE, Type.JSONB,
             Type.VARIANT, Type.TIME, Type.TIMEV2, Type.LAMBDA_FUNCTION
     );
 
@@ -89,21 +86,13 @@ public class ColumnStatistic {
     public final LiteralExpr minExpr;
     public final LiteralExpr maxExpr;
 
-    @SerializedName("histogram")
-    // assign value when do stats estimation.
-    public final Histogram histogram;
-
-    @SerializedName("partitionIdToColStats")
-    public final Map<String, ColumnStatistic> partitionIdToColStats = new HashMap<>();
-
+    @SerializedName("updatedTime")
     public final String updatedTime;
-
-    public final PartitionInfo partitionInfo;
 
     public ColumnStatistic(double count, double ndv, ColumnStatistic original, double avgSizeByte,
             double numNulls, double dataSize, double minValue, double maxValue,
-            LiteralExpr minExpr, LiteralExpr maxExpr, boolean isUnKnown, Histogram histogram,
-            String updatedTime, PartitionInfo partitionInfo) {
+            LiteralExpr minExpr, LiteralExpr maxExpr, boolean isUnKnown,
+            String updatedTime) {
         this.count = count;
         this.ndv = ndv;
         this.original = original;
@@ -115,13 +104,10 @@ public class ColumnStatistic {
         this.minExpr = minExpr;
         this.maxExpr = maxExpr;
         this.isUnKnown = isUnKnown;
-        this.histogram = histogram;
         this.updatedTime = updatedTime;
-        this.partitionInfo = partitionInfo;
     }
 
     public static ColumnStatistic fromResultRow(List<ResultRow> resultRows) {
-        Map<String, ColumnStatistic> partitionIdToColStats = new HashMap<>();
         ColumnStatistic columnStatistic = null;
         try {
             for (ResultRow resultRow : resultRows) {
@@ -129,17 +115,18 @@ public class ColumnStatistic {
                 if (partId == null) {
                     columnStatistic = fromResultRow(resultRow);
                 } else {
-                    partitionIdToColStats.put(partId, fromResultRow(resultRow));
+                    LOG.warn("Column statistics table shouldn't contain partition stats. [{}]", resultRow);
                 }
             }
         } catch (Throwable t) {
-            LOG.debug("Failed to deserialize column stats", t);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Failed to deserialize column stats", t);
+            }
             return ColumnStatistic.UNKNOWN;
         }
         if (columnStatistic == null) {
             return ColumnStatistic.UNKNOWN;
         }
-        columnStatistic.partitionIdToColStats.putAll(partitionIdToColStats);
         return columnStatistic;
     }
 
@@ -165,9 +152,11 @@ public class ColumnStatistic {
             String colName = row.get(5);
             Column col = StatisticsUtil.findColumn(catalogId, dbID, tblId, idxId, colName);
             if (col == null) {
-                LOG.debug("Failed to deserialize column statistics, ctlId: {} dbId: {}"
-                                + "tblId: {} column: {} not exists",
-                        catalogId, dbID, tblId, colName);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Failed to deserialize column statistics, ctlId: {} dbId: {}"
+                                    + "tblId: {} column: {} not exists",
+                            catalogId, dbID, tblId, colName);
+                }
                 return ColumnStatistic.UNKNOWN;
             }
             String min = row.get(10);
@@ -207,7 +196,10 @@ public class ColumnStatistic {
             columnStatisticBuilder.setUpdatedTime(row.get(13));
             return columnStatisticBuilder.build();
         } catch (Exception e) {
-            LOG.warn("Failed to deserialize column statistics.", e);
+            LOG.warn("Failed to deserialize column statistics. reason: [{}]. Row [{}]", e.getMessage(), row);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(e);
+            }
             return ColumnStatistic.UNKNOWN;
         }
     }
@@ -242,7 +234,7 @@ public class ColumnStatistic {
 
     public ColumnStatistic updateBySelectivity(double selectivity, double rowCount) {
         if (isUnKnown) {
-            return UNKNOWN;
+            return this;
         }
         ColumnStatisticBuilder builder = new ColumnStatisticBuilder(this);
         Double rowsAfterFilter = rowCount * selectivity;
@@ -298,8 +290,9 @@ public class ColumnStatistic {
 
     @Override
     public String toString() {
-        return isUnKnown ? "unknown" : String.format("ndv=%.4f, min=%f(%s), max=%f(%s), count=%.4f, avgSizeByte=%f",
-                ndv, minValue, minExpr, maxValue, maxExpr, count, avgSizeByte);
+        return isUnKnown ? "unknown(" + count + ")"
+                : String.format("ndv=%.4f, min=%f(%s), max=%f(%s), count=%.4f, numNulls=%.4f, avgSizeByte=%f",
+                ndv, minValue, minExpr, maxValue, maxExpr, count, numNulls, avgSizeByte);
     }
 
     public JSONObject toJson() {
@@ -328,7 +321,6 @@ public class ColumnStatistic {
         statistic.put("MinExpr", minExpr);
         statistic.put("MaxExpr", maxExpr);
         statistic.put("IsUnKnown", isUnKnown);
-        statistic.put("Histogram", Histogram.serializeToJson(histogram));
         statistic.put("Original", original);
         statistic.put("LastUpdatedTime", updatedTime);
         return statistic;
@@ -378,17 +370,12 @@ public class ColumnStatistic {
             null,
             null,
             stat.getBoolean("IsUnKnown"),
-            Histogram.deserializeFromJson(stat.getString("Histogram")),
-            stat.getString("LastUpdatedTime"), null
+            stat.getString("LastUpdatedTime")
         );
     }
 
     public boolean minOrMaxIsInf() {
         return Double.isInfinite(maxValue) || Double.isInfinite(minValue);
-    }
-
-    public boolean hasHistogram() {
-        return histogram != null && histogram != Histogram.UNKNOWN;
     }
 
     public double getOriginalNdv() {
@@ -398,16 +385,7 @@ public class ColumnStatistic {
         return ndv;
     }
 
-    // TODO expanded this function to support more cases, help to compute the change of ndv density
-    public boolean rangeChanged() {
-        return original != null && (minValue != original.minValue || maxValue != original.maxValue);
-    }
-
     public boolean isUnKnown() {
         return isUnKnown;
-    }
-
-    public void putPartStats(String partId, ColumnStatistic columnStatistic) {
-        this.partitionIdToColStats.put(partId, columnStatistic);
     }
 }

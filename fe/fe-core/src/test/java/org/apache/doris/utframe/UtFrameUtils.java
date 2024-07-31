@@ -45,7 +45,6 @@ import org.apache.doris.qe.ShowExecutor;
 import org.apache.doris.qe.ShowResultSet;
 import org.apache.doris.qe.StmtExecutor;
 import org.apache.doris.system.Backend;
-import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.thrift.TNetworkAddress;
 import org.apache.doris.utframe.MockedBackendFactory.DefaultBeThriftServiceImpl;
 import org.apache.doris.utframe.MockedBackendFactory.DefaultHeartbeatServiceImpl;
@@ -53,6 +52,7 @@ import org.apache.doris.utframe.MockedBackendFactory.DefaultPBackendServiceImpl;
 import org.apache.doris.utframe.MockedFrontend.EnvVarNotSetException;
 import org.apache.doris.utframe.MockedFrontend.FeStartException;
 import org.apache.doris.utframe.MockedFrontend.NotInitException;
+import org.apache.doris.utframe.MockedMetaServerFactory.DefaultPMetaServiceImpl;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -84,7 +84,6 @@ public class UtFrameUtils {
     // Help to create a mocked ConnectContext.
     public static ConnectContext createDefaultCtx(UserIdentity userIdentity, String remoteIp) throws IOException {
         ConnectContext ctx = new ConnectContext();
-        ctx.setCluster(SystemInfoService.DEFAULT_CLUSTER);
         ctx.setCurrentUserIdentity(userIdentity);
         ctx.setQualifiedUser(userIdentity.getQualifiedUser());
         ctx.setRemoteIP(remoteIp);
@@ -144,6 +143,26 @@ public class UtFrameUtils {
             stmt.analyze(analyzer);
         }
         return statementBases;
+    }
+
+    public static StatementBase onlyParse(String originStmt, ConnectContext ctx) throws Exception {
+        System.out.println("begin to parse stmt: " + originStmt);
+        SqlScanner input = new SqlScanner(new StringReader(originStmt), ctx.getSessionVariable().getSqlMode());
+        SqlParser parser = new SqlParser(input);
+        StatementBase statementBase = null;
+        try {
+            statementBase = SqlParserUtils.getFirstStmt(parser);
+        } catch (AnalysisException e) {
+            String errorMessage = parser.getErrorMsg(originStmt);
+            System.err.println("parse failed: " + errorMessage);
+            if (errorMessage == null) {
+                throw e;
+            } else {
+                throw new AnalysisException(errorMessage, e);
+            }
+        }
+        statementBase.setOrigStmt(new OriginStatement(originStmt, 0));
+        return statementBase;
     }
 
     public static String generateRandomFeRunningDir(Class testSuiteClass) {
@@ -463,5 +482,15 @@ public class UtFrameUtils {
                 }
             }
         }
+    }
+
+    public static int createMetaServer(String metaHost) throws IOException {
+        int metaBrpcPort = findValidPort();
+
+        // start metaServer
+        MockedMetaServer metaServer = MockedMetaServerFactory.createMetaServer(metaHost,
+                metaBrpcPort, new DefaultPMetaServiceImpl());
+        metaServer.start();
+        return metaServer.getBrpcPort();
     }
 }

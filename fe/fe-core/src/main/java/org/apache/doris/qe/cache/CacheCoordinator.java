@@ -18,6 +18,7 @@
 package org.apache.doris.qe.cache;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.UserException;
 import org.apache.doris.proto.Types;
 import org.apache.doris.qe.SimpleScheduler;
 import org.apache.doris.system.Backend;
@@ -86,7 +87,9 @@ public class CacheCoordinator {
                 if (SimpleScheduler.isAvailable(virtualNode)) {
                     break;
                 } else {
-                    LOG.debug("backend {} not alive, key {}, retry {}", virtualNode.getId(), key, retryTimes);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("backend {} not alive, key {}, retry {}", virtualNode.getId(), key, retryTimes);
+                    }
                     virtualNode = null;
                 }
                 tailMap = tailMap.tailMap(key + 1);
@@ -108,7 +111,7 @@ public class CacheCoordinator {
         }
         try {
             belock.lock();
-            ImmutableMap<Long, Backend> idToBackend = Env.getCurrentSystemInfo().getIdToBackend();
+            ImmutableMap<Long, Backend> idToBackend = Env.getCurrentSystemInfo().getAllBackendsByAllCluster();
             if (idToBackend != null) {
                 if (!debugModel) {
                     clearBackend(idToBackend);
@@ -118,6 +121,9 @@ public class CacheCoordinator {
                 }
             }
             this.lastRefreshTime = System.currentTimeMillis();
+        } catch (UserException e) {
+            LOG.warn("cant get backend", e);
+            throw new RuntimeException(e);
         } finally {
             belock.unlock();
         }
@@ -133,7 +139,10 @@ public class CacheCoordinator {
                     String nodeName = String.valueOf(bid) + "::" + String.valueOf(i);
                     Types.PUniqueId nodeId = CacheBeProxy.getMd5(nodeName);
                     virtualNodes.remove(nodeId.getHi());
-                    LOG.debug("remove backend id {}, virtual node name {} hashcode {}", bid, nodeName, nodeId.getHi());
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("remove backend id {}, virtual node name {} hashcode {}",
+                                bid, nodeName, nodeId.getHi());
+                    }
                 }
                 itr.remove();
             }
@@ -141,15 +150,17 @@ public class CacheCoordinator {
     }
 
     public void addBackend(Backend backend) {
-        if (realNodes.contains(backend.getId())) {
+        if (realNodes.putIfAbsent(backend.getId(), backend) != null) {
             return;
         }
-        realNodes.put(backend.getId(), backend);
         for (int i = 0; i < VIRTUAL_NODES; i++) {
-            String nodeName = String.valueOf(backend.getId()) + "::" + String.valueOf(i);
+            String nodeName = backend.getId() + "::" + i;
             Types.PUniqueId nodeId = CacheBeProxy.getMd5(nodeName);
             virtualNodes.put(nodeId.getHi(), backend);
-            LOG.debug("add backend id {}, virtual node name {} hashcode {}", backend.getId(), nodeName, nodeId.getHi());
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("add backend id {}, virtual node name {} hashcode {}",
+                        backend.getId(), nodeName, nodeId.getHi());
+            }
         }
     }
 

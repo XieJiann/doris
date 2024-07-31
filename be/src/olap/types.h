@@ -55,6 +55,8 @@
 #include "util/types.h"
 #include "vec/common/arena.h"
 #include "vec/core/wide_integer.h"
+#include "vec/runtime/ipv4_value.h"
+#include "vec/runtime/ipv6_value.h"
 #include "vec/runtime/vdatetime_value.h"
 
 namespace doris {
@@ -83,7 +85,7 @@ public:
 
     virtual void direct_copy(void* dest, const void* src) const = 0;
 
-    // Use only in zone map to cut data.StringParser::string_to_unsigned_int<uint32_t>
+    // Use only in zone map to cut data.
     virtual void direct_copy_may_cut(void* dest, const void* src) const = 0;
 
     virtual Status from_string(void* buf, const std::string& scan_key, const int precision = 0,
@@ -788,8 +790,6 @@ struct BaseFieldTypeTraits : public CppTypeTraits<field_type> {
     static inline CppType get_cpp_type_value(const void* address) {
         if constexpr (field_type == FieldType::OLAP_FIELD_TYPE_LARGEINT) {
             return get_int128_from_unalign(address);
-        } else if constexpr (field_type == FieldType::OLAP_FIELD_TYPE_IPV6) {
-            return get_uint128_from_unalign(address);
         }
         return *reinterpret_cast<const CppType*>(address);
     }
@@ -980,11 +980,8 @@ struct FieldTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV4>
         : public BaseFieldTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV4> {
     static Status from_string(void* buf, const std::string& scan_key, const int precision,
                               const int scale) {
-        StringParser::ParseResult result = StringParser::PARSE_SUCCESS;
-        uint32_t value = StringParser::string_to_unsigned_int<uint32_t>(scan_key.c_str(),
-                                                                        scan_key.size(), &result);
-
-        if (result == StringParser::PARSE_FAILURE) {
+        uint32_t value;
+        if (!IPv4Value::from_string(value, scan_key)) {
             return Status::Error<ErrorCode::INVALID_ARGUMENT>(
                     "FieldTypeTraits<OLAP_FIELD_TYPE_IPV4>::from_string meet PARSE_FAILURE");
         }
@@ -994,10 +991,16 @@ struct FieldTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV4>
 
     static std::string to_string(const void* src) {
         uint32_t value = *reinterpret_cast<const uint32_t*>(src);
-        std::stringstream ss;
-        ss << ((value >> 24) & 0xFF) << '.' << ((value >> 16) & 0xFF) << '.'
-           << ((value >> 8) & 0xFF) << '.' << (value & 0xFF);
-        return ss.str();
+        IPv4Value ipv4_value(value);
+        return ipv4_value.to_string();
+    }
+
+    static void set_to_max(void* buf) {
+        *reinterpret_cast<uint32_t*>(buf) = 0xFFFFFFFF; // 255.255.255.255
+    }
+
+    static void set_to_min(void* buf) {
+        *reinterpret_cast<uint32_t*>(buf) = 0; // 0.0.0.0
     }
 };
 
@@ -1006,67 +1009,27 @@ struct FieldTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV6>
         : public BaseFieldTypeTraits<FieldType::OLAP_FIELD_TYPE_IPV6> {
     static Status from_string(void* buf, const std::string& scan_key, const int precision,
                               const int scale) {
-        std::istringstream iss(scan_key);
-        std::string token;
-        uint128_t result = 0;
-        int count = 0;
-
-        while (std::getline(iss, token, ':')) {
-            if (token.empty()) {
-                count += 8 - count;
-                break;
-            }
-
-            if (count > 8) {
-                return Status::Error<ErrorCode::INVALID_ARGUMENT>(
-                        "FieldTypeTraits<OLAP_FIELD_TYPE_IPV6>::from_string meet PARSE_FAILURE");
-            }
-
-            uint16_t value = 0;
-            std::istringstream ss(token);
-            if (!(ss >> std::hex >> value)) {
-                return Status::Error<ErrorCode::INVALID_ARGUMENT>(
-                        "FieldTypeTraits<OLAP_FIELD_TYPE_IPV6>::from_string meet PARSE_FAILURE");
-            }
-
-            result = (result << 16) | value;
-            count++;
-        }
-
-        if (count < 8) {
+        uint128_t value;
+        if (!IPv6Value::from_string(value, scan_key)) {
             return Status::Error<ErrorCode::INVALID_ARGUMENT>(
                     "FieldTypeTraits<OLAP_FIELD_TYPE_IPV6>::from_string meet PARSE_FAILURE");
         }
-
-        *reinterpret_cast<uint128_t*>(buf) = result;
+        memcpy(buf, &value, sizeof(uint128_t));
         return Status::OK();
     }
 
     static std::string to_string(const void* src) {
-        std::stringstream result;
-        uint128_t ipv6 = *reinterpret_cast<const uint128_t*>(src);
-
-        for (int i = 0; i < 8; i++) {
-            uint16_t part = static_cast<uint16_t>((ipv6 >> (112 - i * 16)) & 0xFFFF);
-            result << std::to_string(part);
-            if (i != 7) {
-                result << ":";
-            }
-        }
-
-        return result.str();
+        uint128_t value = *reinterpret_cast<const uint128_t*>(src);
+        IPv6Value ipv6_value(value);
+        return ipv6_value.to_string();
     }
 
     static void set_to_max(void* buf) {
-        *reinterpret_cast<PackedInt128*>(buf) =
-                static_cast<int128_t>(999999999999999999ll) * 100000000000000000ll * 1000ll +
-                static_cast<int128_t>(99999999999999999ll) * 1000ll + 999ll;
+        *reinterpret_cast<int128_t*>(buf) = -1; // ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
     }
 
     static void set_to_min(void* buf) {
-        *reinterpret_cast<PackedInt128*>(buf) =
-                -(static_cast<int128_t>(999999999999999999ll) * 100000000000000000ll * 1000ll +
-                  static_cast<int128_t>(99999999999999999ll) * 1000ll + 999ll);
+        *reinterpret_cast<uint128_t*>(buf) = 0; // ::
     }
 };
 
@@ -1273,11 +1236,11 @@ struct FieldTypeTraits<FieldType::OLAP_FIELD_TYPE_DATEV2>
         CppType tmp = *reinterpret_cast<const CppType*>(src);
         DateV2Value<DateV2ValueType> value =
                 binary_cast<CppType, DateV2Value<DateV2ValueType>>(tmp);
-        string format = "%Y-%m-%d";
-        string res;
-        res.resize(12);
-        res.reserve(12);
-        value.to_format_string(format.c_str(), format.size(), res.data());
+        std::string format = "%Y-%m-%d";
+        std::string res;
+        res.resize(12 + SAFE_FORMAT_STRING_MARGIN);
+        value.to_format_string_conservative(format.c_str(), format.size(), res.data(),
+                                            12 + SAFE_FORMAT_STRING_MARGIN);
         return res;
     }
 
@@ -1314,9 +1277,9 @@ struct FieldTypeTraits<FieldType::OLAP_FIELD_TYPE_DATETIMEV2>
                 binary_cast<CppType, DateV2Value<DateTimeV2ValueType>>(tmp);
         string format = "%Y-%m-%d %H:%i:%s.%f";
         string res;
-        res.resize(30);
-        res.reserve(30);
-        value.to_format_string(format.c_str(), format.size(), res.data());
+        res.resize(30 + SAFE_FORMAT_STRING_MARGIN);
+        value.to_format_string_conservative(format.c_str(), format.size(), res.data(),
+                                            30 + SAFE_FORMAT_STRING_MARGIN);
         return res;
     }
 

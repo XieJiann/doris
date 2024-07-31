@@ -88,6 +88,12 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * Implementation of Arrow Flight SQL service
+ * <p>
+ * All methods must catch all possible Exceptions, print and throw CallStatus,
+ * otherwise error message will be discarded.
+ */
 public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable {
     private static final Logger LOG = LogManager.getLogger(DorisFlightSqlProducer.class);
     private final Location location;
@@ -175,9 +181,9 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
 
     private FlightInfo executeQueryStatement(String peerIdentity, ConnectContext connectContext, String query,
             final FlightDescriptor descriptor) {
-        Preconditions.checkState(null != connectContext);
-        Preconditions.checkState(!query.isEmpty());
         try {
+            Preconditions.checkState(null != connectContext);
+            Preconditions.checkState(!query.isEmpty());
             // After the previous query was executed, there was no getStreamStatement to take away the result.
             connectContext.getFlightSqlChannel().reset();
             final FlightSqlConnectProcessor flightSQLConnectProcessor = new FlightSqlConnectProcessor(connectContext);
@@ -218,8 +224,13 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
                 }
             } else {
                 // Now only query stmt will pull results from BE.
-                final ByteString handle = ByteString.copyFromUtf8(
-                        DebugUtil.printId(connectContext.getFinstId()) + ":" + query);
+                final ByteString handle;
+                if (connectContext.getSessionVariable().enableParallelResultSink()) {
+                    handle = ByteString.copyFromUtf8(DebugUtil.printId(connectContext.queryId()) + ":" + query);
+                } else {
+                    // only one instance
+                    handle = ByteString.copyFromUtf8(DebugUtil.printId(connectContext.getFinstId()) + ":" + query);
+                }
                 Schema schema = flightSQLConnectProcessor.fetchArrowFlightSchema(5000);
                 if (schema == null) {
                     throw CallStatus.INTERNAL.withDescription("fetch arrow flight schema is null").toRuntimeException();
@@ -232,16 +243,16 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
                         connectContext.getResultFlightServerAddr().port);
                 List<FlightEndpoint> endpoints = Collections.singletonList(new FlightEndpoint(ticket, location));
                 // TODO Set in BE callback after query end, Client will not callback.
-                connectContext.setCommand(MysqlCommand.COM_SLEEP);
                 return new FlightInfo(schema, descriptor, endpoints, -1, -1);
             }
         } catch (Exception e) {
-            connectContext.setCommand(MysqlCommand.COM_SLEEP);
             String errMsg = "get flight info statement failed, " + e.getMessage() + ", " + Util.getRootCauseMessage(e)
                     + ", error code: " + connectContext.getState().getErrorCode() + ", error msg: "
                     + connectContext.getState().getErrorMessage();
             LOG.warn(errMsg, e);
             throw CallStatus.INTERNAL.withDescription(errMsg).withCause(e).toRuntimeException();
+        } finally {
+            connectContext.setCommand(MysqlCommand.COM_SLEEP);
         }
     }
 
@@ -294,9 +305,13 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     public void createPreparedStatement(final ActionCreatePreparedStatementRequest request, final CallContext context,
             final StreamListener<Result> listener) {
         // TODO can only execute complete SQL, not support SQL parameters.
+        // For Python: the Python code will try to create a prepared statement (this is to fit DBAPI, IIRC) and
+        // if the server raises any error except for NotImplemented it will fail. (If it gets NotImplemented,
+        // it will ignore and execute without a prepared statement.) see: https://github.com/apache/arrow/issues/38786
         executorService.submit(() -> {
             ConnectContext connectContext = flightSessionsManager.getConnectContext(context.peerIdentity());
             try {
+                connectContext.setCommand(MysqlCommand.COM_QUERY);
                 final String query = request.getQuery();
                 String preparedStatementId = UUID.randomUUID().toString();
                 final ByteString handle = ByteString.copyFromUtf8(context.peerIdentity() + ":" + preparedStatementId);
@@ -314,7 +329,6 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
                         Any.pack(buildCreatePreparedStatementResult(handle, parameterSchema, metaData))
                                 .toByteArray()));
             } catch (Exception e) {
-                connectContext.setCommand(MysqlCommand.COM_SLEEP);
                 String errMsg = "create prepared statement failed, " + e.getMessage() + ", "
                         + Util.getRootCauseMessage(e) + ", error code: " + connectContext.getState().getErrorCode()
                         + ", error msg: " + connectContext.getState().getErrorMessage();
@@ -324,6 +338,8 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
             } catch (final Throwable t) {
                 listener.onError(CallStatus.INTERNAL.withDescription("Unknown error: " + t).toRuntimeException());
                 return;
+            } finally {
+                connectContext.setCommand(MysqlCommand.COM_SLEEP);
             }
             listener.onCompleted();
         });
@@ -344,20 +360,27 @@ public class DorisFlightSqlProducer implements FlightSqlProducer, AutoCloseable 
     public Runnable acceptPutPreparedStatementUpdate(CommandPreparedStatementUpdate command, CallContext context,
             FlightStream flightStream, StreamListener<PutResult> ackStream) {
         return () -> {
-            while (flightStream.next()) {
-                final VectorSchemaRoot root = flightStream.getRoot();
-                final int rowCount = root.getRowCount();
-                // TODO support update
-                Preconditions.checkState(rowCount == 0);
+            try {
+                while (flightStream.next()) {
+                    final VectorSchemaRoot root = flightStream.getRoot();
+                    final int rowCount = root.getRowCount();
+                    // TODO support update
+                    Preconditions.checkState(rowCount == 0);
 
-                final int recordCount = -1;
-                final DoPutUpdateResult build = DoPutUpdateResult.newBuilder().setRecordCount(recordCount).build();
-                try (final ArrowBuf buffer = rootAllocator.buffer(build.getSerializedSize())) {
-                    buffer.writeBytes(build.toByteArray());
-                    ackStream.onNext(PutResult.metadata(buffer));
+                    final int recordCount = -1;
+                    final DoPutUpdateResult build = DoPutUpdateResult.newBuilder().setRecordCount(recordCount).build();
+                    try (final ArrowBuf buffer = rootAllocator.buffer(build.getSerializedSize())) {
+                        buffer.writeBytes(build.toByteArray());
+                        ackStream.onNext(PutResult.metadata(buffer));
+                    }
                 }
+                ackStream.onCompleted();
+            } catch (Exception e) {
+                String errMsg = "acceptPutPreparedStatementUpdate failed, " + e.getMessage() + ", "
+                        + Util.getRootCauseMessage(e);
+                LOG.warn(errMsg, e);
+                throw CallStatus.INTERNAL.withDescription(errMsg).withCause(e).toRuntimeException();
             }
-            ackStream.onCompleted();
         };
     }
 

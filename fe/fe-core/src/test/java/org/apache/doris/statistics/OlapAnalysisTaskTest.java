@@ -71,29 +71,6 @@ public class OlapAnalysisTaskTest {
         Assertions.assertFalse(tableSample.isPercent());
     }
 
-    // test auto big table
-    @Test
-    public void testSample2(@Mocked OlapTable tbl) {
-        new MockUp<OlapTable>() {
-
-            @Mock
-            public long getDataSize(boolean singleReplica) {
-                return 1000_0000_0000L;
-            }
-        };
-
-        AnalysisInfoBuilder analysisInfoBuilder = new AnalysisInfoBuilder()
-                .setAnalysisMethod(AnalysisMethod.FULL);
-        analysisInfoBuilder.setJobType(JobType.SYSTEM);
-        OlapAnalysisTask olapAnalysisTask = new OlapAnalysisTask();
-        olapAnalysisTask.info = analysisInfoBuilder.build();
-        olapAnalysisTask.tbl = tbl;
-        TableSample tableSample = olapAnalysisTask.getTableSample();
-        Assertions.assertNotNull(tableSample);
-        Assertions.assertEquals(StatisticsUtil.getHugeTableSampleRows(), tableSample.getSampleValue());
-
-    }
-
     // test auto small table
     @Test
     public void testSample3(@Mocked OlapTable tbl) {
@@ -101,7 +78,7 @@ public class OlapAnalysisTaskTest {
 
             @Mock
             public long getDataSize(boolean singleReplica) {
-                return 1000;
+                return StatisticsUtil.getHugeTableLowerBoundSizeInBytes() - 1;
             }
         };
 
@@ -149,9 +126,20 @@ public class OlapAnalysisTaskTest {
             }
 
             @Mock
-            public void runQuery(String sql, boolean needEncode) {
-                Assertions.assertFalse(needEncode);
-                Assertions.assertEquals("SELECT CONCAT('30001', '-', '-1', '-', 'null') AS `id`, 10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, -1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`, 500 AS `row_count`, SUM(`t1`.`count`) * COUNT(1) / (SUM(`t1`.`count`) - SUM(IF(`t1`.`count` = 1, 1, 0)) + SUM(IF(`t1`.`count` = 1, 1, 0)) * SUM(`t1`.`count`) / 500) as `ndv`, IFNULL(SUM(IF(`t1`.`column_key` IS NULL, `t1`.`count`, 0)), 0) * 5.0 as `null_count`, '1' AS `min`, '2' AS `max`, SUM(LENGTH(`column_key`) * count) * 5.0 AS `data_size`, NOW() FROM (     SELECT t0.`${colName}` as `column_key`, COUNT(1) as `count`     FROM     (SELECT `${colName}` FROM `catalogName`.`${dbName}`.`${tblName}`      limit 100) as `t0`     GROUP BY `t0`.`${colName}` ) as `t1` ", sql);
+            public void runQuery(String sql) {
+                Assertions.assertEquals("SELECT CONCAT('30001', '-', '-1', '-', 'null') "
+                        + "AS `id`, 10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, "
+                        + "-1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`, 500 AS"
+                        + " `row_count`, SUM(`t1`.`count`) * COUNT(1) / (SUM(`t1`.`count`)"
+                        + " - SUM(IF(`t1`.`count` = 1, 1, 0)) + SUM(IF(`t1`.`count` = 1, 1, 0))"
+                        + " * SUM(`t1`.`count`) / 500) as `ndv`, IFNULL(SUM(IF(`t1`.`column_key`"
+                        + " IS NULL, `t1`.`count`, 0)), 0) * 5.0 as `null_count`, "
+                        + "SUBSTRING(CAST('1' AS STRING), 1, 1024) AS `min`,"
+                        + " SUBSTRING(CAST('2' AS STRING), 1, 1024) AS `max`, "
+                        + "SUM(t1.count) * 4 * 5.0 AS `data_size`, NOW() "
+                        + "FROM (     SELECT t0.`null` as `column_key`, COUNT(1) "
+                        + "as `count`     FROM     (SELECT `null` FROM `catalogName`.`${dbName}`.`null`"
+                        + "       limit 100) as `t0`     GROUP BY `t0`.`null` ) as `t1` ", sql);
                 return;
             }
         };
@@ -171,7 +159,7 @@ public class OlapAnalysisTaskTest {
         };
 
         OlapAnalysisTask olapAnalysisTask = new OlapAnalysisTask();
-        olapAnalysisTask.col = new Column("test", PrimitiveType.STRING);
+        olapAnalysisTask.col = new Column("test", PrimitiveType.INT);
         olapAnalysisTask.tbl = tableIf;
         AnalysisInfoBuilder analysisInfoBuilder = new AnalysisInfoBuilder();
         analysisInfoBuilder.setJobType(AnalysisInfo.JobType.MANUAL);
@@ -216,9 +204,16 @@ public class OlapAnalysisTaskTest {
             }
 
             @Mock
-            public void runQuery(String sql, boolean needEncode) {
-                Assertions.assertFalse(needEncode);
-                Assertions.assertEquals(" SELECT CONCAT(30001, '-', -1, '-', 'null') AS `id`, 10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, -1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`, 500 AS `row_count`, ROUND(NDV(`${colName}`) * 5.0) as `ndv`, ROUND(SUM(CASE WHEN `${colName}` IS NULL THEN 1 ELSE 0 END) * 5.0) AS `null_count`, '1' AS `min`, '2' AS `max`, SUM(LENGTH(`${colName}`)) * 5.0 AS `data_size`, NOW() FROM `catalogName`.`${dbName}`.`${tblName}`  limit 100", sql);
+            public void runQuery(String sql) {
+                Assertions.assertEquals(" SELECT CONCAT(30001, '-', -1, '-', 'null') AS `id`, "
+                        + "10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, "
+                        + "-1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`, "
+                        + "500 AS `row_count`, ROUND(NDV(`null`) * 5.0) as `ndv`, "
+                        + "ROUND(SUM(CASE WHEN `null` IS NULL THEN 1 ELSE 0 END) * 5.0) "
+                        + "AS `null_count`, SUBSTRING(CAST('1' AS STRING), 1, 1024) AS `min`, "
+                        + "SUBSTRING(CAST('2' AS STRING), 1, 1024) AS `max`, "
+                        + "SUM(LENGTH(`null`)) * 5.0 AS `data_size`, NOW() "
+                        + "FROM `catalogName`.`${dbName}`.`null`   limit 100", sql);
                 return;
             }
         };
@@ -290,9 +285,22 @@ public class OlapAnalysisTaskTest {
             }
 
             @Mock
-            public void runQuery(String sql, boolean needEncode) {
-                Assertions.assertFalse(needEncode);
-                Assertions.assertEquals("SELECT CONCAT('30001', '-', '-1', '-', 'null') AS `id`, 10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, -1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`, 500 AS `row_count`, SUM(`t1`.`count`) * COUNT(1) / (SUM(`t1`.`count`) - SUM(IF(`t1`.`count` = 1, 1, 0)) + SUM(IF(`t1`.`count` = 1, 1, 0)) * SUM(`t1`.`count`) / 500) as `ndv`, IFNULL(SUM(IF(`t1`.`column_key` IS NULL, `t1`.`count`, 0)), 0) * 5.0 as `null_count`, '1' AS `min`, '2' AS `max`, SUM(LENGTH(`column_key`) * count) * 5.0 AS `data_size`, NOW() FROM (     SELECT t0.`${colName}` as `column_key`, COUNT(1) as `count`     FROM     (SELECT `${colName}` FROM `catalogName`.`${dbName}`.`${tblName}`      limit 100) as `t0`     GROUP BY `t0`.`${colName}` ) as `t1` ", sql);
+            public void runQuery(String sql) {
+                System.out.println(sql);
+                Assertions.assertEquals("SELECT CONCAT('30001', '-', '-1', '-', 'null') "
+                        + "AS `id`, 10001 AS `catalog_id`, 20001 AS `db_id`, 30001 AS `tbl_id`, "
+                        + "-1 AS `idx_id`, 'null' AS `col_id`, NULL AS `part_id`,"
+                        + " 500 AS `row_count`, SUM(`t1`.`count`) * COUNT(1) / (SUM(`t1`.`count`) "
+                        + "- SUM(IF(`t1`.`count` = 1, 1, 0)) + SUM(IF(`t1`.`count` = 1, 1, 0)) * "
+                        + "SUM(`t1`.`count`) / 500) as `ndv`, IFNULL(SUM(IF(`t1`.`column_key` "
+                        + "IS NULL, `t1`.`count`, 0)), 0) * 5.0 as `null_count`, "
+                        + "SUBSTRING(CAST('1' AS STRING), 1, 1024) AS `min`, "
+                        + "SUBSTRING(CAST('2' AS STRING), 1, 1024) AS `max`, "
+                        + "SUM(LENGTH(`column_key`) * count) * 5.0 AS `data_size`, NOW() "
+                        + "FROM (     SELECT t0.`colValue` as `column_key`, COUNT(1) as `count`     FROM     "
+                        + "(SELECT SUBSTRING(CAST(`null` AS STRING), 1, 1024) AS `colValue`          "
+                        + "FROM `catalogName`.`${dbName}`.`null`       limit 100) as `t0`     "
+                        + "GROUP BY `t0`.`colValue` ) as `t1` ", sql);
                 return;
             }
         };

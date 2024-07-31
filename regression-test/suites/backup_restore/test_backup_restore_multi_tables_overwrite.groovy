@@ -18,7 +18,7 @@
 suite("test_backup_restore_multi_tables_overwrite", "backup_restore") {
     String dbName = "backup_restore_multi_tables_overwrite_db"
     String suiteName = "test_backup_restore_multi_tables_overwrite"
-    String repoName = "${suiteName}_repo"
+    String repoName = "repo_" + UUID.randomUUID().toString().replace("-", "")
     String snapshotName = "${suiteName}_snapshot"
     String tableNamePrefix = "${suiteName}_tables"
 
@@ -61,9 +61,7 @@ suite("test_backup_restore_multi_tables_overwrite", "backup_restore") {
         ON (${backupTables.join(",")})
     """
 
-    while (!syncer.checkSnapshotFinish(dbName)) {
-        Thread.sleep(3000)
-    }
+    syncer.waitSnapshotFinish(dbName)
 
     def snapshot = syncer.getSnapshotTimestamp(repoName, snapshotName)
     assertTrue(snapshot != null)
@@ -80,13 +78,11 @@ suite("test_backup_restore_multi_tables_overwrite", "backup_restore") {
         PROPERTIES
         (
             "backup_timestamp" = "${snapshot}",
-            "replication_num" = "1"
+            "reserve_replica" = "true"
         )
     """
 
-    while (!syncer.checkAllRestoreFinish(dbName)) {
-        Thread.sleep(3000)
-    }
+    syncer.waitAllRestoreFinish(dbName)
 
     qt_select "SELECT * FROM ${dbName}.${firstTableName} ORDER BY id"
     for (def tableName in tables) {

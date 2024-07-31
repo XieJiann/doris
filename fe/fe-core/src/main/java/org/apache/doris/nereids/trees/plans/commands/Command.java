@@ -33,6 +33,7 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * All DDL and DML commands' super class.
@@ -43,9 +44,7 @@ public abstract class Command extends AbstractPlan implements LogicalPlan, Block
         super(type, Optional.empty(), Optional.empty(), null, ImmutableList.of());
     }
 
-    public void run(ConnectContext ctx, StmtExecutor executor) throws Exception {
-        // all command should impl this interface.
-    }
+    public abstract void run(ConnectContext ctx, StmtExecutor executor) throws Exception;
 
     @Override
     public Optional<GroupExpression> getGroupExpression() {
@@ -101,6 +100,11 @@ public abstract class Command extends AbstractPlan implements LogicalPlan, Block
     @Override
     public List<Slot> getOutput() {
         throw new RuntimeException("Command do not implement getOutput");
+    }
+
+    @Override
+    public Set<Slot> getOutputSet() {
+        throw new RuntimeException("Command do not implement getOutputSet");
     }
 
     @Override

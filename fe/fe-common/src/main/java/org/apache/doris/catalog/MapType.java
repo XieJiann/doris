@@ -106,9 +106,9 @@ public class MapType extends Type {
     @Override
     public String toSql(int depth) {
         if (depth >= MAX_NESTING_DEPTH) {
-            return "MAP<...>";
+            return "map<...>";
         }
-        return String.format("MAP<%s,%s>",
+        return String.format("map<%s,%s>",
                 keyType.toSql(depth + 1), valueType.toSql(depth + 1));
     }
 
@@ -126,9 +126,11 @@ public class MapType extends Type {
             return false;
         }
 
-        if ((keyType.isNull() || ((MapType) t).getKeyType().isNull())
-                && (valueType.isNull() || ((MapType) t).getKeyType().isNull())) {
-            return true;
+        if (((MapType) t).getIsKeyContainsNull() != getIsKeyContainsNull()) {
+            return false;
+        }
+        if (((MapType) t).getIsValueContainsNull() != getIsValueContainsNull()) {
+            return false;
         }
 
         return keyType.matchesType(((MapType) t).keyType)
@@ -174,7 +176,7 @@ public class MapType extends Type {
 
     @Override
     public String toString() {
-        return String.format("MAP<%s,%s>",
+        return String.format("map<%s,%s>",
                 keyType.toString(), valueType.toString());
     }
 
@@ -247,5 +249,10 @@ public class MapType extends Type {
     @Override
     public int hashCode() {
         return Objects.hash(keyType, valueType);
+    }
+
+    @Override
+    public boolean isSupported() {
+        return keyType.isSupported() && !keyType.isNull() && valueType.isSupported() && !valueType.isNull();
     }
 }

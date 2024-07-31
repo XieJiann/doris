@@ -18,6 +18,8 @@
 suite("bucket-shuffle-join") {
     sql "SET enable_nereids_planner=true"
     sql "SET enable_fallback_to_original_planner=false"
+    sql 'SET be_number_for_test=1'
+    sql 'SET parallel_pipeline_task_num=1'
     order_qt_test_bucket """
     select * from test_bucket_shuffle_join where rectime="2021-12-01 00:00:00" and id in (select k1 from test_join where k1 in (1,2))
     """
@@ -58,6 +60,9 @@ suite("bucket-shuffle-join") {
 
     sql """analyze table shuffle_join_t1 with sync;"""
     sql """analyze table shuffle_join_t2 with sync;"""
+
+    // we must disable join reorder since right xx join cannot be bucket shuffle join now
+    sql """set disable_join_reorder=true"""
 
     explain {
         sql("select * from shuffle_join_t1 t1 left join shuffle_join_t2 t2 on t1.a = t2.a;")

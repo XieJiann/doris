@@ -16,7 +16,7 @@
 // under the License.
 
 suite("test_backup_restore_reserve_dynamic_partition_false", "backup_restore") {
-    String repoName = "test_backup_restore_dynamic_partition_reserve_false_repo"
+    String repoName = "repo_" + UUID.randomUUID().toString().replace("-", "")
     String dbName = "backup_restore_dynamic_partition_reserve_false_db"
     String tableName = "dynamic_partition_reserve_false_table"
 
@@ -78,9 +78,7 @@ suite("test_backup_restore_reserve_dynamic_partition_false", "backup_restore") {
         ON (${tableName})
     """    
 
-    while (!syncer.checkSnapshotFinish(dbName)) {
-        Thread.sleep(3000)
-    }
+    syncer.waitSnapshotFinish(dbName)
     def snapshot = syncer.getSnapshotTimestamp(repoName, snapshotName)
     assertTrue(snapshot != null)
 
@@ -94,13 +92,11 @@ suite("test_backup_restore_reserve_dynamic_partition_false", "backup_restore") {
         (
             "backup_timestamp" = "${snapshot}",
             "reserve_dynamic_partition_enable" = "false",
-            "replication_num" = "1"
+            "reserve_replica" = "true"
         )
     """
-    while (!syncer.checkAllRestoreFinish(dbName)) {
-        Thread.sleep(3000)
-    }
-    
+    syncer.waitAllRestoreFinish(dbName)
+
     def restore_properties = sql "SHOW CREATE TABLE ${dbName}.${tableName}"
 
     assertTrue(restore_properties[0][1].contains("\"dynamic_partition.enable\" = \"false\""))

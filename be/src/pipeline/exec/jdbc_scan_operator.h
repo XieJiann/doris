@@ -24,8 +24,6 @@
 #include "common/status.h"
 #include "operator.h"
 #include "pipeline/exec/scan_operator.h"
-#include "pipeline/pipeline_x/operator.h"
-#include "vec/exec/scan/vscan_node.h"
 
 namespace doris {
 
@@ -45,6 +43,8 @@ public:
             : ScanLocalState<JDBCScanLocalState>(state, parent) {}
     Status _init_scanners(std::list<vectorized::VScannerSPtr>* scanners) override;
 
+    std::string name_suffix() const override;
+
 private:
     friend class vectorized::NewJdbcScanner;
 };
@@ -52,7 +52,7 @@ private:
 class JDBCScanOperatorX final : public ScanOperatorX<JDBCScanLocalState> {
 public:
     JDBCScanOperatorX(ObjectPool* pool, const TPlanNode& tnode, int operator_id,
-                      const DescriptorTbl& descs);
+                      const DescriptorTbl& descs, int parallel_tasks);
 
 private:
     friend class JDBCScanLocalState;

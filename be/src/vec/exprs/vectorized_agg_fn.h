@@ -56,16 +56,12 @@ public:
                    const SlotDescriptor* intermediate_slot_desc,
                    const SlotDescriptor* output_slot_desc);
 
-    void set_timer(RuntimeProfile::Counter* exec_timer, RuntimeProfile::Counter* merge_timer,
-                   RuntimeProfile::Counter* expr_timer) {
-        _exec_timer = exec_timer;
+    void set_timer(RuntimeProfile::Counter* merge_timer, RuntimeProfile::Counter* expr_timer) {
         _merge_timer = merge_timer;
         _expr_timer = expr_timer;
     }
 
     Status open(RuntimeState* state);
-
-    void close(RuntimeState* state);
 
     // create/destroy AGG Data
     void create(AggregateDataPtr place);
@@ -101,6 +97,10 @@ public:
     bool is_merge() const { return _is_merge; }
     const VExprContextSPtrs& input_exprs_ctxs() const { return _input_exprs_ctxs; }
 
+    static Status check_agg_fn_output(int key_size,
+                                      const std::vector<vectorized::AggFnEvaluator*>& agg_fn,
+                                      const RowDescriptor& output_row_desc);
+
     void set_version(const int version) { _function->set_version(version); }
 
     AggFnEvaluator* clone(RuntimeState* state, ObjectPool* pool);
@@ -123,7 +123,6 @@ private:
     const SlotDescriptor* _intermediate_slot_desc = nullptr;
     const SlotDescriptor* _output_slot_desc = nullptr;
 
-    RuntimeProfile::Counter* _exec_timer = nullptr;
     RuntimeProfile::Counter* _merge_timer = nullptr;
     RuntimeProfile::Counter* _expr_timer = nullptr;
 

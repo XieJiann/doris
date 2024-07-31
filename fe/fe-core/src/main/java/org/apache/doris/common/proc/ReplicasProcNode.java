@@ -17,11 +17,13 @@
 
 package org.apache.doris.common.proc;
 
+import org.apache.doris.catalog.DiskInfo;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Replica;
 import org.apache.doris.catalog.Tablet;
 import org.apache.doris.catalog.TabletMeta;
+import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.util.NetUtils;
 import org.apache.doris.common.util.TimeUtils;
@@ -42,7 +44,9 @@ public class ReplicasProcNode implements ProcNodeInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>().add("ReplicaId")
             .add("BackendId").add("Version").add("LstSuccessVersion").add("LstFailedVersion").add("LstFailedTime")
             .add("SchemaHash").add("LocalDataSize").add("RemoteDataSize").add("RowCount").add("State").add("IsBad")
-            .add("VersionCount").add("PathHash").add("MetaUrl").add("CompactionStatus").add("CooldownReplicaId")
+            .add("IsUserDrop")
+            .add("VisibleVersionCount").add("VersionCount").add("PathHash").add("Path")
+            .add("MetaUrl").add("CompactionStatus").add("CooldownReplicaId")
             .add("CooldownMetaId").add("QueryHits").build();
 
     private long tabletId;
@@ -54,8 +58,8 @@ public class ReplicasProcNode implements ProcNodeInterface {
     }
 
     @Override
-    public ProcResult fetchResult() {
-        ImmutableMap<Long, Backend> backendMap = Env.getCurrentSystemInfo().getIdToBackend();
+    public ProcResult fetchResult() throws AnalysisException {
+        ImmutableMap<Long, Backend> backendMap = Env.getCurrentSystemInfo().getAllBackendsByAllCluster();
 
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
@@ -83,6 +87,16 @@ public class ReplicasProcNode implements ProcNodeInterface {
             String metaUrl = String.format("http://" + hostPort + "/api/meta/header/%d", tabletId);
             String compactionUrl = String.format("http://" + hostPort + "/api/compaction/show?tablet_id=%d", tabletId);
 
+            String path = "";
+            if (be != null) {
+                DiskInfo diskInfo = be.getDisks().values().stream()
+                        .filter(disk -> disk.getPathHash() == replica.getPathHash())
+                        .findFirst().orElse(null);
+                if (diskInfo != null) {
+                    path = diskInfo.getRootPath();
+                }
+            }
+
             String cooldownMetaId = "";
             if (replica.getCooldownMetaId() != null) {
                 cooldownMetaId = replica.getCooldownMetaId().toString();
@@ -103,8 +117,11 @@ public class ReplicasProcNode implements ProcNodeInterface {
                                         String.valueOf(replica.getRowCount()),
                                         String.valueOf(replica.getState()),
                                         String.valueOf(replica.isBad()),
-                                        String.valueOf(replica.getVersionCount()),
+                                        String.valueOf(replica.isUserDrop()),
+                                        String.valueOf(replica.getVisibleVersionCount()),
+                                        String.valueOf(replica.getTotalVersionCount()),
                                         String.valueOf(replica.getPathHash()),
+                                        path,
                                         metaUrl,
                                         compactionUrl,
                                         String.valueOf(tablet.getCooldownConf().first),

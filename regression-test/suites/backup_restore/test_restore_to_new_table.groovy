@@ -16,7 +16,7 @@
 // under the License.
 
 suite("test_restore_to_new_table", "backup_restore") {
-    String repoName = "test_restore_to_new_table_repo"
+    String repoName = "repo_" + UUID.randomUUID().toString().replace("-", "")
     String dbName = "restore_to_new_table_db"
     String tableName = "test_restore_to_new_table_table"
     String snapshotName = "test_backup_restore_snapshot"
@@ -52,9 +52,7 @@ suite("test_restore_to_new_table", "backup_restore") {
         ON (${tableName})
     """
 
-    while (!syncer.checkSnapshotFinish(dbName)) {
-        Thread.sleep(3000)
-    }
+    syncer.waitSnapshotFinish(dbName)
 
     def snapshot = syncer.getSnapshotTimestamp(repoName, snapshotName)
     assertTrue(snapshot != null)
@@ -68,13 +66,11 @@ suite("test_restore_to_new_table", "backup_restore") {
         PROPERTIES
         (
             "backup_timestamp" = "${snapshot}",
-            "replication_num" = "1"
+            "reserve_replica" = "true"
         )
     """
 
-    while (!syncer.checkAllRestoreFinish(dbName)) {
-        Thread.sleep(3000)
-    }
+    syncer.waitAllRestoreFinish(dbName)
 
     result = sql "SELECT * FROM ${dbName}.${tableName}"
     assertEquals(result.size(), values.size());

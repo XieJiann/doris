@@ -23,13 +23,17 @@ import org.apache.doris.nereids.trees.expressions.functions.table.Frontends;
 import org.apache.doris.nereids.trees.expressions.functions.table.FrontendsDisks;
 import org.apache.doris.nereids.trees.expressions.functions.table.GroupCommit;
 import org.apache.doris.nereids.trees.expressions.functions.table.Hdfs;
+import org.apache.doris.nereids.trees.expressions.functions.table.HttpStream;
 import org.apache.doris.nereids.trees.expressions.functions.table.IcebergMeta;
+import org.apache.doris.nereids.trees.expressions.functions.table.Jobs;
 import org.apache.doris.nereids.trees.expressions.functions.table.Local;
+import org.apache.doris.nereids.trees.expressions.functions.table.MvInfos;
 import org.apache.doris.nereids.trees.expressions.functions.table.Numbers;
-import org.apache.doris.nereids.trees.expressions.functions.table.Queries;
+import org.apache.doris.nereids.trees.expressions.functions.table.Partitions;
+import org.apache.doris.nereids.trees.expressions.functions.table.Query;
 import org.apache.doris.nereids.trees.expressions.functions.table.S3;
 import org.apache.doris.nereids.trees.expressions.functions.table.TableValuedFunction;
-import org.apache.doris.nereids.trees.expressions.functions.table.WorkloadGroups;
+import org.apache.doris.nereids.trees.expressions.functions.table.Tasks;
 
 /** TableValuedFunctionVisitor */
 public interface TableValuedFunctionVisitor<R, C> {
@@ -47,6 +51,22 @@ public interface TableValuedFunctionVisitor<R, C> {
         return visitTableValuedFunction(frontends, context);
     }
 
+    default R visitMvInfos(MvInfos mvInfos, C context) {
+        return visitTableValuedFunction(mvInfos, context);
+    }
+
+    default R visitPartitions(Partitions partitions, C context) {
+        return visitTableValuedFunction(partitions, context);
+    }
+
+    default R visitJobs(Jobs jobs, C context) {
+        return visitTableValuedFunction(jobs, context);
+    }
+
+    default R visitTasks(Tasks tasks, C context) {
+        return visitTableValuedFunction(tasks, context);
+    }
+
     default R visitFrontendsDisks(FrontendsDisks frontendsDisks, C context) {
         return visitTableValuedFunction(frontendsDisks, context);
     }
@@ -57,6 +77,10 @@ public interface TableValuedFunctionVisitor<R, C> {
 
     default R visitHdfs(Hdfs hdfs, C context) {
         return visitTableValuedFunction(hdfs, context);
+    }
+
+    default R visitHttpStream(HttpStream httpStream, C context) {
+        return visitTableValuedFunction(httpStream, context);
     }
 
     default R visitIcebergMeta(IcebergMeta icebergMeta, C context) {
@@ -71,15 +95,11 @@ public interface TableValuedFunctionVisitor<R, C> {
         return visitTableValuedFunction(numbers, context);
     }
 
-    default R visitQueries(Queries queries, C context) {
-        return visitTableValuedFunction(queries, context);
-    }
-
     default R visitS3(S3 s3, C context) {
         return visitTableValuedFunction(s3, context);
     }
 
-    default R visitWorkloadGroups(WorkloadGroups workloadGroups, C context) {
-        return visitTableValuedFunction(workloadGroups, context);
+    default R visitQuery(Query query, C context) {
+        return visitTableValuedFunction(query, context);
     }
 }
